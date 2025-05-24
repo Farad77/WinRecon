@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 import yaml
+import getpass
 
 # Configuration par défaut
 DEFAULT_CONFIG = {
@@ -256,16 +257,28 @@ class WinReconScanner:
         ]
         
         # Si on a des credentials
-        if self.config.get('username') and self.config.get('password'):
-            auth_commands = [
-                f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                f"-u {self.config['username']} -p {self.config['password']} --shares",
-                f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                f"-u {self.config['username']} -p {self.config['password']} --users",
-                f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                f"-u {self.config['username']} -p {self.config['password']} --groups",
-            ]
+        if self.config.get('username') and (self.config.get('password') or self.config.get('hash')):
+            if self.config.get('password'):
+                auth_commands = [
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {self.config['username']} -p {self.config['password']} --shares",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {self.config['username']} -p {self.config['password']} --users",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {self.config['username']} -p {self.config['password']} --groups",
+                ]
+            else:  # Using hash
+                auth_commands = [
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {self.config['username']} -H {self.config['hash']} --shares",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {self.config['username']} -H {self.config['hash']} --users",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {self.config['username']} -H {self.config['hash']} --groups",
+                ]
             commands.extend(auth_commands)
+        else:
+            self.logger.info("[*] No credentials provided - skipping authenticated SMB enumeration")
             
         # Exécuter tous les scans SMB
         for i, command in enumerate(commands):
@@ -288,31 +301,37 @@ class WinReconScanner:
         ])
         
         # Si on a des credentials et un domaine
-        if (self.config.get('username') and self.config.get('password') and 
+        if (self.config.get('username') and (self.config.get('password') or self.config.get('hash')) and 
             self.config.get('domain')):
             
             domain = self.config['domain']
             username = self.config['username']
-            password = self.config['password']
+            password = self.config.get('password')
+            hash_val = self.config.get('hash')
             
-            # windapsearch
-            windap_commands = [
-                f"{self.config['tools']['windapsearch']} -d {domain} "
-                f"-u {username} -p {password} --dc-ip {target.ip} -U",
-                f"{self.config['tools']['windapsearch']} -d {domain} "
-                f"-u {username} -p {password} --dc-ip {target.ip} -G",
-                f"{self.config['tools']['windapsearch']} -d {domain} "
-                f"-u {username} -p {password} --dc-ip {target.ip} -C",
-                f"{self.config['tools']['windapsearch']} -d {domain} "
-                f"-u {username} -p {password} --dc-ip {target.ip} --da",
-            ]
-            commands.extend(windap_commands)
-            
-            # BloodHound
-            bloodhound_cmd = (f"{self.config['tools']['bloodhound']} "
-                            f"-u {username} -p {password} -d {domain} "
-                            f"-ns {target.ip} -c all")
-            commands.append(bloodhound_cmd)
+            # windapsearch - only if password provided (doesn't support hash)
+            if password:
+                windap_commands = [
+                    f"{self.config['tools']['windapsearch']} -d {domain} "
+                    f"-u {username} -p {password} --dc-ip {target.ip} -U",
+                    f"{self.config['tools']['windapsearch']} -d {domain} "
+                    f"-u {username} -p {password} --dc-ip {target.ip} -G",
+                    f"{self.config['tools']['windapsearch']} -d {domain} "
+                    f"-u {username} -p {password} --dc-ip {target.ip} -C",
+                    f"{self.config['tools']['windapsearch']} -d {domain} "
+                    f"-u {username} -p {password} --dc-ip {target.ip} --da",
+                ]
+                commands.extend(windap_commands)
+                
+                # BloodHound
+                bloodhound_cmd = (f"{self.config['tools']['bloodhound']} "
+                                f"-u {username} -p {password} -d {domain} "
+                                f"-ns {target.ip} -c all")
+                commands.append(bloodhound_cmd)
+            else:
+                self.logger.info("[*] Using hash authentication - skipping tools that require password")
+        else:
+            self.logger.info("[*] No credentials provided - skipping authenticated LDAP enumeration")
         
         # Exécuter tous les scans LDAP
         for i, command in enumerate(commands):
@@ -327,6 +346,7 @@ class WinReconScanner:
         self.logger.info(f"Starting Kerberos enumeration for {target.ip}")
         
         if not (self.config.get('domain') and self.config.get('username')):
+            self.logger.info("[*] No credentials provided - skipping Kerberos enumeration")
             return
             
         domain = self.config['domain']
@@ -340,9 +360,10 @@ class WinReconScanner:
         commands.append(asrep_cmd)
         
         # Si on a des credentials
-        if self.config.get('password'):
+        if self.config.get('password') or self.config.get('hash'):
             username = self.config['username']
-            password = self.config['password']
+            password = self.config.get('password')
+            hash_val = self.config.get('hash')
             
             # Kerberoasting
             kerberoast_cmd = (f"{self.config['tools']['impacket-GetUserSPNs']} "
@@ -605,6 +626,44 @@ Examples:
         'hash': args.hash,
         'dc_ip': args.dc_ip
     })
+    
+    # Interactive credential prompt if not provided and not disabled
+    if not args.no_prompt and not (args.username or args.password or args.hash):
+        print("\n" + "="*50)
+        print("CREDENTIAL CONFIGURATION")
+        print("="*50)
+        use_creds = input("\nDo you have credentials for authentication? (y/n): ").lower().strip()
+        
+        if use_creds == 'y':
+            print("\nPlease provide authentication details:")
+            if not config['domain']:
+                config['domain'] = input("Domain name (e.g., CORP.LOCAL): ").strip()
+            
+            if not config['username']:
+                config['username'] = input("Username: ").strip()
+            
+            # Ask for password or hash
+            auth_type = input("Authentication type - (p)assword or (h)ash? [p]: ").lower().strip() or 'p'
+            
+            if auth_type == 'h':
+                if not config['hash']:
+                    config['hash'] = getpass.getpass("NTLM Hash (LM:NTLM or :NTLM): ")
+            else:
+                if not config['password']:
+                    config['password'] = getpass.getpass("Password: ")
+            
+            # Optional DC IP
+            if not config['dc_ip']:
+                dc_ip = input("Domain Controller IP (optional, press Enter to skip): ").strip()
+                if dc_ip:
+                    config['dc_ip'] = dc_ip
+        else:
+            print("\n[*] No credentials provided. Credential-based enumeration will be skipped.")
+            print("[*] Only unauthenticated scans will be performed.")
+            config['username'] = None
+            config['password'] = None
+            config['hash'] = None
+            config['domain'] = None
     
     # Parser les cibles
     all_targets = []
