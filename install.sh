@@ -57,7 +57,19 @@ install_method_native() {
     
     # Install system dependencies
     log_info "Installing system dependencies..."
-    apt-get update
+    # Update with error handling for unsigned repos
+    if ! apt-get update 2>&1 | tee /tmp/apt-update.log; then
+        if grep -q "is not signed" /tmp/apt-update.log; then
+            log_warn "Some repositories are not signed. Continuing anyway..."
+            # Try to update ignoring unsigned repos
+            apt-get update --allow-insecure-repositories 2>/dev/null || true
+        else
+            log_error "Failed to update package lists"
+            exit 1
+        fi
+    fi
+    rm -f /tmp/apt-update.log
+    
     apt-get install -y python3 python3-pip python3-venv
     
     # Install PyYAML
