@@ -74,10 +74,13 @@ class Target:
 class WinReconScanner:
     """Scanner principal pour l'énumération Windows/AD"""
     
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, no_prompt: bool = False):
         self.config = config
+        self.no_prompt = no_prompt
         self.targets: List[Target] = []
         self.results_dir = Path(config['output_dir'])
+        # Create results directory before setting up logging
+        self.results_dir.mkdir(exist_ok=True)
         self.setup_logging()
         self.ensure_tools_available()
         
@@ -86,11 +89,14 @@ class WinReconScanner:
         log_format = '%(asctime)s - %(levelname)s - %(message)s'
         level = logging.DEBUG if self.config['verbose'] else logging.INFO
         
+        # Ensure log file path exists
+        log_file = self.results_dir / 'winrecon.log'
+        
         logging.basicConfig(
             level=level,
             format=log_format,
             handlers=[
-                logging.FileHandler(self.results_dir / 'winrecon.log'),
+                logging.FileHandler(log_file),
                 logging.StreamHandler(sys.stdout)
             ]
         )
@@ -99,12 +105,91 @@ class WinReconScanner:
     def ensure_tools_available(self):
         """Vérifie que les outils nécessaires sont disponibles"""
         missing_tools = []
+        tool_commands = {
+            'nmap': 'apt-get install -y nmap',
+            'ldapsearch': 'apt-get install -y ldap-utils',
+            'smbclient': 'apt-get install -y smbclient',
+            'enum4linux': 'apt-get install -y enum4linux',
+            'crackmapexec': 'apt-get install -y crackmapexec',
+            'impacket-secretsdump': 'apt-get install -y python3-impacket',
+            'impacket-GetNPUsers': 'apt-get install -y python3-impacket',
+            'impacket-GetUserSPNs': 'apt-get install -y python3-impacket',
+            'kerbrute': 'wget https://github.com/ropnop/kerbrute/releases/latest/download/kerbrute_linux_amd64 -O /usr/local/bin/kerbrute && chmod +x /usr/local/bin/kerbrute',
+            'gobuster': 'apt-get install -y gobuster',
+            'nikto': 'apt-get install -y nikto',
+            'windapsearch': 'git clone https://github.com/ropnop/windapsearch.git /opt/windapsearch',
+            'bloodhound': 'pip3 install bloodhound'
+        }
+        
         for tool, path in self.config['tools'].items():
             if not self.check_tool_available(path.split()[0]):
                 missing_tools.append(tool)
                 
         if missing_tools:
-            self.logger.warning(f"Outils manquants: {', '.join(missing_tools)}")
+            self.logger.warning(f"Missing tools detected: {', '.join(missing_tools)}")
+            print("\n" + "="*60)
+            print("MISSING TOOLS DETECTED")
+            print("="*60)
+            print(f"\nThe following tools are missing: {', '.join(missing_tools)}")
+            print("\nWinRecon can work with limited functionality, but installing")
+            print("these tools will enable all features.")
+            
+            if self.no_prompt:
+                print("\n[*] Skipping installation prompt (--no-prompt flag used)")
+                return
+                
+            install_prompt = input("\nWould you like to see installation instructions? (y/n): ").lower().strip()
+            
+            if install_prompt == 'y':
+                print("\n" + "-"*60)
+                print("INSTALLATION INSTRUCTIONS")
+                print("-"*60)
+                
+                # Check if user has sudo
+                has_sudo = os.geteuid() == 0 or subprocess.run(['sudo', '-n', 'true'], 
+                                                               capture_output=True).returncode == 0
+                
+                if not has_sudo:
+                    print("\n[!] You need sudo/root privileges to install system tools.")
+                    print("    Please run WinRecon with sudo or ask your administrator to install:")
+                
+                print("\nTo install all missing tools at once:")
+                all_commands = set()
+                impacket_needed = False
+                
+                for tool in missing_tools:
+                    if tool in tool_commands:
+                        cmd = tool_commands[tool]
+                        if 'impacket' in cmd:
+                            impacket_needed = True
+                        elif cmd.startswith('apt-get'):
+                            pkg = cmd.replace('apt-get install -y ', '')
+                            all_commands.add(pkg)
+                
+                if all_commands or impacket_needed:
+                    print(f"\n    sudo apt-get update")
+                    if all_commands:
+                        print(f"    sudo apt-get install -y {' '.join(all_commands)}")
+                    if impacket_needed:
+                        print(f"    sudo apt-get install -y python3-impacket")
+                
+                print("\nIndividual installation commands:")
+                for tool in missing_tools:
+                    if tool in tool_commands:
+                        print(f"\n{tool}:")
+                        cmd = tool_commands[tool]
+                        if not has_sudo and not cmd.startswith('pip3'):
+                            cmd = 'sudo ' + cmd
+                        print(f"    {cmd}")
+                
+                print("\n" + "-"*60)
+                
+                if has_sudo:
+                    auto_install = input("\nAttempt automatic installation? (y/n): ").lower().strip()
+                    if auto_install == 'y':
+                        self.install_missing_tools(missing_tools, tool_commands)
+            
+            print("\nContinuing with available tools...\n")
             
     def check_tool_available(self, tool_path: str) -> bool:
         """Vérifie si un outil est disponible"""
@@ -116,6 +201,42 @@ class WinReconScanner:
             return True
         except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
             return False
+    
+    def install_missing_tools(self, missing_tools: List[str], tool_commands: Dict[str, str]):
+        """Try to install missing tools automatically"""
+        print("\nAttempting automatic installation...")
+        
+        # Update package lists first
+        print("\n[*] Updating package lists...")
+        try:
+            subprocess.run(['apt-get', 'update'], check=True)
+        except subprocess.CalledProcessError:
+            print("[!] Failed to update package lists")
+            return
+        
+        # Install each tool
+        for tool in missing_tools:
+            if tool not in tool_commands:
+                continue
+                
+            print(f"\n[*] Installing {tool}...")
+            cmd = tool_commands[tool]
+            
+            try:
+                if cmd.startswith('apt-get'):
+                    subprocess.run(cmd.split(), check=True)
+                elif cmd.startswith('wget'):
+                    subprocess.run(cmd, shell=True, check=True)
+                elif cmd.startswith('git'):
+                    subprocess.run(cmd.split(), check=True)
+                elif cmd.startswith('pip3'):
+                    subprocess.run(cmd.split(), check=True)
+                print(f"[✓] {tool} installed successfully")
+            except subprocess.CalledProcessError as e:
+                print(f"[✗] Failed to install {tool}: {e}")
+        
+        print("\n[*] Installation process completed.")
+        print("[*] Some tools may require additional configuration.")
 
     def create_target_structure(self, target: Target):
         """Crée la structure de dossiers pour une cible"""
@@ -462,7 +583,7 @@ class WinReconScanner:
         """Point d'entrée principal"""
         self.logger.info("Starting WinRecon")
         
-        # Créer le répertoire de résultats
+        # Ensure results directory exists (already created in __init__)
         self.results_dir.mkdir(exist_ok=True)
         
         # Créer les objets Target
@@ -682,7 +803,7 @@ Examples:
     print("-" * 50)
     
     # Lancer le scanner
-    scanner = WinReconScanner(config)
+    scanner = WinReconScanner(config, no_prompt=args.no_prompt)
     
     try:
         asyncio.run(scanner.run(all_targets))
