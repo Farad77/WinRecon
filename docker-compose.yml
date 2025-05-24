@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  winrecon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: winrecon:latest
+    container_name: winrecon
+    volumes:
+      - ./winrecon_results:/winrecon_results
+      - ./winrecon-config.yaml:/root/.config/winrecon/config.yaml:ro
+    network_mode: host
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+    
+  # Test service for running tests
+  winrecon-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: winrecon:latest
+    container_name: winrecon-test
+    command: python3 test_winrecon.py
+    
+# Example usage:
+# docker-compose run --rm winrecon winrecon 192.168.1.100
+# docker-compose run --rm winrecon-test

@@ -1,0 +1,5 @@
+# WinRecon Python Dependencies
+# Only the essential dependencies based on actual imports
+
+# Core dependency for configuration
+PyYAML>=6.0.1

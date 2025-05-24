@@ -1,0 +1,638 @@
+#!/usr/bin/env python3
+
+"""
+WinRecon - Windows/Active Directory Automated Enumeration Tool
+Inspired by AutoRecon but specialized for Windows environments
+
+Author: [Your Name]
+Version: 1.0
+Description: Multi-threaded Windows/AD reconnaissance tool with automated enumeration based on OCD mindmaps
+"""
+
+import argparse
+import asyncio
+import concurrent.futures
+import ipaddress
+import json
+import logging
+import os
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+import yaml
+
+# Configuration par défaut
+DEFAULT_CONFIG = {
+    'output_dir': 'winrecon_results',
+    'max_concurrent_scans': 10,
+    'timeout': 3600,  # 1 heure
+    'verbose': False,
+    'domain': None,
+    'username': None,
+    'password': None,
+    'hash': None,
+    'dc_ip': None,
+    'tools': {
+        'nmap': '/usr/bin/nmap',
+        'ldapsearch': '/usr/bin/ldapsearch',
+        'smbclient': '/usr/bin/smbclient',
+        'enum4linux': '/usr/bin/enum4linux',
+        'windapsearch': 'python3 /opt/windapsearch/windapsearch.py',
+        'bloodhound': 'python3 /opt/BloodHound.py/bloodhound.py',
+        'crackmapexec': '/usr/bin/crackmapexec',
+        'impacket-secretsdump': '/usr/bin/impacket-secretsdump',
+        'impacket-GetNPUsers': '/usr/bin/impacket-GetNPUsers',
+        'impacket-GetUserSPNs': '/usr/bin/impacket-GetUserSPNs',
+        'kerbrute': '/opt/kerbrute/kerbrute',
+        'gobuster': '/usr/bin/gobuster',
+        'nikto': '/usr/bin/nikto'
+    }
+}
+
+@dataclass
+class Target:
+    """Représente une cible à scanner"""
+    ip: str
+    hostname: Optional[str] = None
+    domain: Optional[str] = None
+    os_info: Optional[str] = None
+    open_ports: List[int] = None
+    services: Dict[int, str] = None
+    
+    def __post_init__(self):
+        if self.open_ports is None:
+            self.open_ports = []
+        if self.services is None:
+            self.services = {}
+
+class WinReconScanner:
+    """Scanner principal pour l'énumération Windows/AD"""
+    
+    def __init__(self, config: Dict):
+        self.config = config
+        self.targets: List[Target] = []
+        self.results_dir = Path(config['output_dir'])
+        self.setup_logging()
+        self.ensure_tools_available()
+        
+    def setup_logging(self):
+        """Configuration du logging"""
+        log_format = '%(asctime)s - %(levelname)s - %(message)s'
+        level = logging.DEBUG if self.config['verbose'] else logging.INFO
+        
+        logging.basicConfig(
+            level=level,
+            format=log_format,
+            handlers=[
+                logging.FileHandler(self.results_dir / 'winrecon.log'),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+        
+    def ensure_tools_available(self):
+        """Vérifie que les outils nécessaires sont disponibles"""
+        missing_tools = []
+        for tool, path in self.config['tools'].items():
+            if not self.check_tool_available(path.split()[0]):
+                missing_tools.append(tool)
+                
+        if missing_tools:
+            self.logger.warning(f"Outils manquants: {', '.join(missing_tools)}")
+            
+    def check_tool_available(self, tool_path: str) -> bool:
+        """Vérifie si un outil est disponible"""
+        try:
+            subprocess.run([tool_path, '--help'], 
+                         stdout=subprocess.DEVNULL, 
+                         stderr=subprocess.DEVNULL, 
+                         timeout=5)
+            return True
+        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
+            return False
+
+    def create_target_structure(self, target: Target):
+        """Crée la structure de dossiers pour une cible"""
+        target_dir = self.results_dir / target.ip
+        dirs_to_create = [
+            target_dir,
+            target_dir / 'scans',
+            target_dir / 'scans' / 'nmap',
+            target_dir / 'scans' / 'smb',
+            target_dir / 'scans' / 'ldap',
+            target_dir / 'scans' / 'web',
+            target_dir / 'scans' / 'kerberos',
+            target_dir / 'loot',
+            target_dir / 'loot' / 'credentials',
+            target_dir / 'loot' / 'hashes',
+            target_dir / 'loot' / 'bloodhound',
+            target_dir / 'exploit',
+            target_dir / 'report'
+        ]
+        
+        for directory in dirs_to_create:
+            directory.mkdir(parents=True, exist_ok=True)
+            
+        # Créer les fichiers de rapport par défaut
+        (target_dir / 'report' / 'notes.txt').touch()
+        (target_dir / 'report' / 'local.txt').touch()
+        (target_dir / 'report' / 'proof.txt').touch()
+        
+        return target_dir
+
+    async def run_command(self, command: str, output_file: Optional[Path] = None) -> tuple:
+        """Exécute une commande de manière asynchrone"""
+        try:
+            self.logger.debug(f"Executing: {command}")
+            
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), 
+                timeout=self.config['timeout']
+            )
+            
+            result = {
+                'command': command,
+                'returncode': process.returncode,
+                'stdout': stdout.decode('utf-8', errors='ignore'),
+                'stderr': stderr.decode('utf-8', errors='ignore')
+            }
+            
+            if output_file:
+                with open(output_file, 'w') as f:
+                    f.write(result['stdout'])
+                    
+            return result
+            
+        except asyncio.TimeoutError:
+            self.logger.error(f"Command timeout: {command}")
+            return {'command': command, 'error': 'timeout'}
+        except Exception as e:
+            self.logger.error(f"Command failed: {command} - {e}")
+            return {'command': command, 'error': str(e)}
+
+    async def nmap_scan(self, target: Target, target_dir: Path):
+        """Scan Nmap initial pour découvrir les services"""
+        self.logger.info(f"Starting Nmap scan for {target.ip}")
+        
+        # Scan TCP complet
+        tcp_command = (f"{self.config['tools']['nmap']} -sC -sV -O -A -Pn "
+                      f"-oA {target_dir}/scans/nmap/tcp_full {target.ip}")
+        
+        tcp_result = await self.run_command(tcp_command)
+        
+        # Scan UDP des ports principaux
+        udp_command = (f"{self.config['tools']['nmap']} -sU -sV --top-ports 1000 "
+                      f"-oA {target_dir}/scans/nmap/udp_top1000 {target.ip}")
+        
+        udp_result = await self.run_command(udp_command)
+        
+        # Parser les résultats pour extraire les ports ouverts
+        self.parse_nmap_results(target, tcp_result, udp_result)
+        
+        # Scans spécialisés basés sur les ports découverts
+        await self.specialized_nmap_scans(target, target_dir)
+
+    async def specialized_nmap_scans(self, target: Target, target_dir: Path):
+        """Scans Nmap spécialisés basés sur les services découverts"""
+        scripts_map = {
+            53: "dns-zone-transfer,dns-recursion,dns-cache-snoop",
+            88: "krb5-enum-users",
+            135: "rpc-grind,rpcinfo",
+            139: "smb-enum-shares,smb-enum-users,smb-enum-domains,smb-security-mode",
+            389: "ldap-rootdse,ldap-search",
+            445: "smb-enum-shares,smb-enum-users,smb-enum-domains,smb-security-mode,smb-vuln-*",
+            593: "rpc-grind,rpcinfo",
+            636: "ldap-rootdse,ldap-search",
+            3268: "ldap-rootdse,ldap-search",
+            3269: "ldap-rootdse,ldap-search",
+            5985: "http-enum,http-methods,http-webdav-scan"
+        }
+        
+        for port in target.open_ports:
+            if port in scripts_map:
+                command = (f"{self.config['tools']['nmap']} -p {port} "
+                          f"--script {scripts_map[port]} "
+                          f"-oA {target_dir}/scans/nmap/port_{port}_specialized {target.ip}")
+                
+                await self.run_command(command)
+
+    def parse_nmap_results(self, target: Target, tcp_result: Dict, udp_result: Dict):
+        """Parse les résultats Nmap pour extraire les informations"""
+        # Implémentation simplifiée - dans la vraie vie, on utiliserait python-nmap
+        # ou on parserait le XML généré par nmap
+        pass
+
+    async def smb_enumeration(self, target: Target, target_dir: Path):
+        """Énumération SMB complète"""
+        if 445 not in target.open_ports and 139 not in target.open_ports:
+            return
+            
+        self.logger.info(f"Starting SMB enumeration for {target.ip}")
+        
+        commands = [
+            # enum4linux
+            f"{self.config['tools']['enum4linux']} -a {target.ip}",
+            
+            # smbclient liste des partages
+            f"{self.config['tools']['smbclient']} -L //{target.ip}/ -N",
+            
+            # crackmapexec
+            f"{self.config['tools']['crackmapexec']} smb {target.ip}",
+            f"{self.config['tools']['crackmapexec']} smb {target.ip} --shares",
+            f"{self.config['tools']['crackmapexec']} smb {target.ip} --users",
+            f"{self.config['tools']['crackmapexec']} smb {target.ip} --groups",
+            f"{self.config['tools']['crackmapexec']} smb {target.ip} --local-auth",
+        ]
+        
+        # Si on a des credentials
+        if self.config.get('username') and self.config.get('password'):
+            auth_commands = [
+                f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                f"-u {self.config['username']} -p {self.config['password']} --shares",
+                f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                f"-u {self.config['username']} -p {self.config['password']} --users",
+                f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                f"-u {self.config['username']} -p {self.config['password']} --groups",
+            ]
+            commands.extend(auth_commands)
+            
+        # Exécuter tous les scans SMB
+        for i, command in enumerate(commands):
+            output_file = target_dir / 'scans' / 'smb' / f'smb_scan_{i+1}.txt'
+            await self.run_command(command, output_file)
+
+    async def ldap_enumeration(self, target: Target, target_dir: Path):
+        """Énumération LDAP/Active Directory"""
+        if 389 not in target.open_ports and 636 not in target.open_ports:
+            return
+            
+        self.logger.info(f"Starting LDAP enumeration for {target.ip}")
+        
+        commands = []
+        
+        # ldapsearch anonyme
+        commands.extend([
+            f"ldapsearch -x -h {target.ip} -s base namingcontexts",
+            f"ldapsearch -x -h {target.ip} -s base '(objectClass=*)'",
+        ])
+        
+        # Si on a des credentials et un domaine
+        if (self.config.get('username') and self.config.get('password') and 
+            self.config.get('domain')):
+            
+            domain = self.config['domain']
+            username = self.config['username']
+            password = self.config['password']
+            
+            # windapsearch
+            windap_commands = [
+                f"{self.config['tools']['windapsearch']} -d {domain} "
+                f"-u {username} -p {password} --dc-ip {target.ip} -U",
+                f"{self.config['tools']['windapsearch']} -d {domain} "
+                f"-u {username} -p {password} --dc-ip {target.ip} -G",
+                f"{self.config['tools']['windapsearch']} -d {domain} "
+                f"-u {username} -p {password} --dc-ip {target.ip} -C",
+                f"{self.config['tools']['windapsearch']} -d {domain} "
+                f"-u {username} -p {password} --dc-ip {target.ip} --da",
+            ]
+            commands.extend(windap_commands)
+            
+            # BloodHound
+            bloodhound_cmd = (f"{self.config['tools']['bloodhound']} "
+                            f"-u {username} -p {password} -d {domain} "
+                            f"-ns {target.ip} -c all")
+            commands.append(bloodhound_cmd)
+        
+        # Exécuter tous les scans LDAP
+        for i, command in enumerate(commands):
+            output_file = target_dir / 'scans' / 'ldap' / f'ldap_scan_{i+1}.txt'
+            await self.run_command(command, output_file)
+
+    async def kerberos_enumeration(self, target: Target, target_dir: Path):
+        """Énumération Kerberos"""
+        if 88 not in target.open_ports:
+            return
+            
+        self.logger.info(f"Starting Kerberos enumeration for {target.ip}")
+        
+        if not (self.config.get('domain') and self.config.get('username')):
+            return
+            
+        domain = self.config['domain']
+        commands = []
+        
+        # ASREPRoast
+        asrep_cmd = (f"{self.config['tools']['impacket-GetNPUsers']} "
+                    f"{domain}/ -usersfile /usr/share/seclists/Usernames/Names/names.txt "
+                    f"-format hashcat -outputfile {target_dir}/loot/credentials/asrep_hashes.txt "
+                    f"-dc-ip {target.ip}")
+        commands.append(asrep_cmd)
+        
+        # Si on a des credentials
+        if self.config.get('password'):
+            username = self.config['username']
+            password = self.config['password']
+            
+            # Kerberoasting
+            kerberoast_cmd = (f"{self.config['tools']['impacket-GetUserSPNs']} "
+                            f"{domain}/{username}:{password} "
+                            f"-request -outputfile {target_dir}/loot/credentials/kerberoast_hashes.txt "
+                            f"-dc-ip {target.ip}")
+            commands.append(kerberoast_cmd)
+        
+        # Exécuter les scans Kerberos
+        for i, command in enumerate(commands):
+            output_file = target_dir / 'scans' / 'kerberos' / f'kerberos_scan_{i+1}.txt'
+            await self.run_command(command, output_file)
+
+    async def web_enumeration(self, target: Target, target_dir: Path):
+        """Énumération des services web"""
+        web_ports = [80, 443, 8080, 8443, 5985, 5986]
+        found_web_ports = [port for port in web_ports if port in target.open_ports]
+        
+        if not found_web_ports:
+            return
+            
+        self.logger.info(f"Starting web enumeration for {target.ip}")
+        
+        for port in found_web_ports:
+            protocol = 'https' if port in [443, 8443, 5986] else 'http'
+            url = f"{protocol}://{target.ip}:{port}"
+            
+            commands = [
+                # Nikto
+                f"{self.config['tools']['nikto']} -h {url}",
+                
+                # Gobuster
+                f"{self.config['tools']['gobuster']} dir -u {url} "
+                f"-w /usr/share/seclists/Discovery/Web-Content/common.txt",
+            ]
+            
+            for i, command in enumerate(commands):
+                output_file = target_dir / 'scans' / 'web' / f'web_{port}_scan_{i+1}.txt'
+                await self.run_command(command, output_file)
+
+    async def scan_target(self, target: Target):
+        """Scanne une cible complètement"""
+        self.logger.info(f"Starting comprehensive scan of {target.ip}")
+        
+        # Créer la structure de dossiers
+        target_dir = self.create_target_structure(target)
+        
+        # Scan initial Nmap
+        await self.nmap_scan(target, target_dir)
+        
+        # Énumérations spécialisées en parallèle
+        await asyncio.gather(
+            self.smb_enumeration(target, target_dir),
+            self.ldap_enumeration(target, target_dir),
+            self.kerberos_enumeration(target, target_dir),
+            self.web_enumeration(target, target_dir),
+            return_exceptions=True
+        )
+        
+        self.logger.info(f"Completed scan of {target.ip}")
+        
+        # Générer le rapport
+        await self.generate_report(target, target_dir)
+
+    async def generate_report(self, target: Target, target_dir: Path):
+        """Génère un rapport de synthèse"""
+        report_file = target_dir / 'report' / 'summary.txt'
+        
+        with open(report_file, 'w') as f:
+            f.write(f"WinRecon Report for {target.ip}\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"Scan started: {datetime.now()}\n")
+            f.write(f"Target: {target.ip}\n")
+            if target.hostname:
+                f.write(f"Hostname: {target.hostname}\n")
+            if target.domain:
+                f.write(f"Domain: {target.domain}\n")
+            f.write(f"Open ports: {', '.join(map(str, target.open_ports))}\n\n")
+            
+            # Analyse des services
+            f.write("Services Analysis:\n")
+            f.write("-" * 20 + "\n")
+            
+            if 445 in target.open_ports or 139 in target.open_ports:
+                f.write("✓ SMB service detected - Check scans/smb/ for enumeration results\n")
+            if 389 in target.open_ports or 636 in target.open_ports:
+                f.write("✓ LDAP service detected - Check scans/ldap/ for AD enumeration\n")
+            if 88 in target.open_ports:
+                f.write("✓ Kerberos service detected - Check scans/kerberos/ for ticket attacks\n")
+            
+            web_ports = [80, 443, 8080, 8443, 5985, 5986]
+            if any(port in target.open_ports for port in web_ports):
+                f.write("✓ Web services detected - Check scans/web/ for web enumeration\n")
+
+    async def run(self, targets: List[str]):
+        """Point d'entrée principal"""
+        self.logger.info("Starting WinRecon")
+        
+        # Créer le répertoire de résultats
+        self.results_dir.mkdir(exist_ok=True)
+        
+        # Créer les objets Target
+        self.targets = [Target(ip=ip) for ip in targets]
+        
+        # Scanner toutes les cibles
+        semaphore = asyncio.Semaphore(self.config['max_concurrent_scans'])
+        
+        async def scan_with_semaphore(target):
+            async with semaphore:
+                await self.scan_target(target)
+        
+        await asyncio.gather(
+            *[scan_with_semaphore(target) for target in self.targets],
+            return_exceptions=True
+        )
+        
+        self.logger.info("WinRecon completed")
+
+def parse_targets(target_input: str) -> List[str]:
+    """Parse les cibles d'entrée (IP, CIDR, fichier)"""
+    targets = []
+    
+    if os.path.isfile(target_input):
+        # Lire depuis un fichier
+        with open(target_input, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    targets.extend(parse_targets(line))
+    else:
+        try:
+            # Essayer de parser comme CIDR
+            network = ipaddress.ip_network(target_input, strict=False)
+            targets.extend([str(ip) for ip in network.hosts()])
+        except ValueError:
+            # Traiter comme une IP simple
+            targets.append(target_input)
+    
+    return targets
+
+def load_config(config_file: Optional[str] = None) -> Dict:
+    """Charge la configuration"""
+    config = DEFAULT_CONFIG.copy()
+    
+    if config_file and os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            user_config = yaml.safe_load(f)
+            config.update(user_config)
+    
+    return config
+
+def prompt_for_credentials(config: Dict) -> Dict:
+    """Prompt interactively for missing credentials"""
+    import getpass
+    
+    print("\n=== WinRecon Credential Configuration ===")
+    print("Note: Press Enter to skip optional fields\n")
+    
+    # Domain
+    if not config.get('domain'):
+        domain = input("Domain name (e.g., corp.local): ").strip()
+        if domain:
+            config['domain'] = domain
+    
+    # Username
+    if not config.get('username'):
+        username = input("Username: ").strip()
+        if username:
+            config['username'] = username
+    
+    # Password or Hash (only if username provided)
+    if config.get('username') and not config.get('password') and not config.get('hash'):
+        print("\nAuthentication method:")
+        print("1) Password")
+        print("2) NTLM Hash")
+        print("3) Skip (anonymous/null session)")
+        
+        choice = input("Select option [1-3]: ").strip()
+        
+        if choice == '1':
+            password = getpass.getpass("Password: ")
+            if password:
+                config['password'] = password
+        elif choice == '2':
+            ntlm_hash = getpass.getpass("NTLM Hash (LM:NTLM or just NTLM): ")
+            if ntlm_hash:
+                config['hash'] = ntlm_hash
+    
+    # DC IP (optional but recommended)
+    if not config.get('dc_ip') and config.get('domain'):
+        dc_ip = input("Domain Controller IP (optional, press Enter to skip): ").strip()
+        if dc_ip:
+            config['dc_ip'] = dc_ip
+    
+    print("\n" + "=" * 40 + "\n")
+    
+    return config
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="WinRecon - Windows/Active Directory Automated Enumeration Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s 192.168.1.100
+  %(prog)s 192.168.1.0/24
+  %(prog)s -t targets.txt -d domain.local -u user -p password
+  %(prog)s 192.168.1.100 --dc-ip 192.168.1.10 -u user -H ntlmhash
+        """
+    )
+    
+    parser.add_argument('targets', nargs='*', 
+                       help='Target IP addresses, CIDR ranges, or hostnames')
+    parser.add_argument('-t', '--target-file', 
+                       help='File containing target list')
+    parser.add_argument('-o', '--output', default='winrecon_results',
+                       help='Output directory (default: winrecon_results)')
+    parser.add_argument('-c', '--config', 
+                       help='Configuration file (YAML format)')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                       help='Enable verbose output')
+    parser.add_argument('--max-scans', type=int, default=10,
+                       help='Maximum concurrent scans (default: 10)')
+    parser.add_argument('--timeout', type=int, default=3600,
+                       help='Timeout per command in seconds (default: 3600)')
+    parser.add_argument('--no-prompt', action='store_true',
+                       help='Disable interactive credential prompting')
+    
+    # Credentials
+    cred_group = parser.add_argument_group('credentials')
+    cred_group.add_argument('-d', '--domain', 
+                           help='Domain name')
+    cred_group.add_argument('-u', '--username', 
+                           help='Username for authentication')
+    cred_group.add_argument('-p', '--password', 
+                           help='Password for authentication')
+    cred_group.add_argument('-H', '--hash', 
+                           help='NTLM hash for authentication')
+    cred_group.add_argument('--dc-ip', 
+                           help='Domain Controller IP address')
+    
+    args = parser.parse_args()
+    
+    # Valider les arguments
+    if not args.targets and not args.target_file:
+        parser.error("Must specify targets or target file")
+    
+    # Charger la configuration
+    config = load_config(args.config)
+    
+    # Mettre à jour avec les arguments CLI
+    config.update({
+        'output_dir': args.output,
+        'verbose': args.verbose,
+        'max_concurrent_scans': args.max_scans,
+        'timeout': args.timeout,
+        'domain': args.domain,
+        'username': args.username,
+        'password': args.password,
+        'hash': args.hash,
+        'dc_ip': args.dc_ip
+    })
+    
+    # Parser les cibles
+    all_targets = []
+    if args.targets:
+        for target in args.targets:
+            all_targets.extend(parse_targets(target))
+    if args.target_file:
+        all_targets.extend(parse_targets(args.target_file))
+    
+    if not all_targets:
+        parser.error("No valid targets found")
+    
+    print(f"WinRecon v1.0 - Windows/AD Enumeration Tool")
+    print(f"Targets to scan: {len(all_targets)}")
+    print(f"Output directory: {config['output_dir']}")
+    print("-" * 50)
+    
+    # Lancer le scanner
+    scanner = WinReconScanner(config)
+    
+    try:
+        asyncio.run(scanner.run(all_targets))
+    except KeyboardInterrupt:
+        print("\nScan interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

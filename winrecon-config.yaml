@@ -1,0 +1,221 @@
+# WinRecon Configuration File
+# Basé sur les techniques du mindmap Orange Cyberdefense AD
+
+# Paramètres généraux
+output_dir: "winrecon_results"
+max_concurrent_scans: 10
+timeout: 3600  # Timeout en secondes pour chaque commande
+verbose: false
+
+# Informations de domaine par défaut
+domain: null
+username: null
+password: null
+hash: null  # Hash NTLM au format LM:NTLM
+dc_ip: null
+
+# Chemins des outils (ajustez selon votre installation)
+tools:
+  nmap: "/usr/bin/nmap"
+  ldapsearch: "/usr/bin/ldapsearch"
+  smbclient: "/usr/bin/smbclient"
+  enum4linux: "/usr/bin/enum4linux"
+  windapsearch: "python3 /opt/windapsearch/windapsearch.py"
+  bloodhound: "python3 /opt/BloodHound.py/bloodhound.py"
+  crackmapexec: "/usr/bin/crackmapexec"
+  impacket-secretsdump: "/usr/bin/impacket-secretsdump"
+  impacket-GetNPUsers: "/usr/bin/impacket-GetNPUsers"
+  impacket-GetUserSPNs: "/usr/bin/impacket-GetUserSPNs"
+  kerbrute: "/opt/kerbrute/kerbrute"
+  gobuster: "/usr/bin/gobuster"
+  nikto: "/usr/bin/nikto"
+  adidnsdump: "python3 /opt/adidnsdump/adidnsdump.py"
+  ldapdomaindump: "python3 /opt/ldapdomaindump/ldapdomaindump.py"
+  responder: "/usr/bin/responder"
+  mitm6: "/opt/mitm6/mitm6.py"
+  ntlmrelayx: "python3 /opt/impacket/examples/ntlmrelayx.py"
+  certipy: "python3 /opt/Certipy/certipy.py"
+  coercer: "python3 /opt/Coercer/coercer.py"
+  petitpotam: "python3 /opt/PetitPotam/PetitPotam.py"
+  dfscoerce: "python3 /opt/DFSCoerce/dfscoerce.py"
+  printnightmare: "python3 /opt/CVE-2021-1675/CVE-2021-1675.py"
+  zerologon: "python3 /opt/zerologon/cve-2020-1472-exploit.py"
+  sharphound: "/opt/SharpHound/SharpHound.exe"
+
+# Wordlists par défaut
+wordlists:
+  usernames: "/usr/share/seclists/Usernames/Names/names.txt"
+  passwords: "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000.txt"
+  directories: "/usr/share/seclists/Discovery/Web-Content/common.txt"
+  dns: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+
+# Configuration des scans par service
+scan_configs:
+  # Configuration SMB
+  smb:
+    enabled: true
+    anonymous_enum: true
+    share_enum: true
+    user_enum: true
+    group_enum: true
+    policy_enum: true
+    vuln_scan: true
+    
+  # Configuration LDAP
+  ldap:
+    enabled: true
+    anonymous_bind: true
+    base_dn_discovery: true
+    user_enum: true
+    group_enum: true
+    computer_enum: true
+    gpo_enum: true
+    ou_enum: true
+    acl_enum: true
+    
+  # Configuration Kerberos
+  kerberos:
+    enabled: true
+    user_enum: true
+    asrep_roast: true
+    kerberoast: true
+    ticket_requests: true
+    
+  # Configuration DNS
+  dns:
+    enabled: true
+    zone_transfer: true
+    subdomain_enum: true
+    reverse_lookup: true
+    
+  # Configuration Web
+  web:
+    enabled: true
+    directory_enum: true
+    vulnerability_scan: true
+    technology_detection: true
+    
+  # Configuration RPC
+  rpc:
+    enabled: true
+    endpoint_enum: true
+    
+  # Configuration WinRM
+  winrm:
+    enabled: true
+    auth_test: true
+
+# Techniques d'attaque avancées (basées sur OCD mindmap)
+advanced_techniques:
+  # Privilege Escalation
+  privesc:
+    enabled: false  # Désactivé par défaut pour éviter les actions intrusives
+    kernel_exploits: false
+    service_exploits: false
+    scheduled_tasks: false
+    autoruns: false
+    
+  # Lateral Movement
+  lateral_movement:
+    enabled: false
+    pass_the_hash: false
+    pass_the_ticket: false
+    over_pass_the_hash: false
+    golden_ticket: false
+    silver_ticket: false
+    
+  # Persistence
+  persistence:
+    enabled: false
+    golden_ticket: false
+    skeleton_key: false
+    dcsync: false
+    
+  # Certificate Services (ADCS)
+  adcs:
+    enabled: true
+    cert_enum: true
+    template_enum: true
+    esc1_8: true  # ESC1-8 vulnerabilities
+    
+  # MSSQL
+  mssql:
+    enabled: true
+    instance_discovery: true
+    link_crawling: true
+    
+  # Exchange
+  exchange:
+    enabled: true
+    version_detection: true
+    privexchange: false
+    
+  # Coercion Attacks
+  coercion:
+    enabled: false  # Potentiellement intrusif
+    petitpotam: false
+    printerbug: false
+    dfscoerce: false
+
+# Patterns de détection dans les outputs
+patterns:
+  # Patterns pour identifier des informations importantes
+  credentials:
+    - "password"
+    - "pwd"
+    - "pass"
+    - "credential"
+    - "secret"
+    - "key"
+    
+  users:
+    - "Administrator"
+    - "admin"
+    - "root"
+    - "service"
+    - "backup"
+    - "guest"
+    
+  groups:
+    - "Domain Admins"
+    - "Enterprise Admins"
+    - "Schema Admins"
+    - "Account Operators"
+    - "Backup Operators"
+    - "Print Operators"
+    - "Server Operators"
+    
+  vulnerabilities:
+    - "MS17-010"
+    - "EternalBlue"
+    - "PrintNightmare"
+    - "Zerologon"
+    - "PetitPotam"
+    - "noPac"
+    - "SamAccountName"
+
+# Rapports
+reporting:
+  generate_html: true
+  generate_json: true
+  generate_csv: true
+  include_screenshots: false
+  auto_recommendations: true
+
+# Exclusions
+exclusions:
+  # IPs à exclure du scan
+  exclude_ips: []
+  
+  # Ports à exclure
+  exclude_ports: []
+  
+  # Services/techniques à exclure
+  exclude_techniques: []
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_to_file: true
+  log_commands: true
+  log_errors: true
