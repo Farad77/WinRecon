@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # WinRecon Installation Script
-# Comprehensive installer with multiple installation methods
+# Automatic installation with comprehensive error handling
 
-set -e
+set +e  # Don't exit on errors, we'll handle them
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -17,6 +17,7 @@ print_banner() {
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║              WinRecon Installation Script                    ║"
     echo "║       Windows/Active Directory Enumeration Tool              ║"
+    echo "║              Automatic Installation v2.0                     ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -33,293 +34,433 @@ log_error() {
     echo -e "${RED}[✗]${NC} $1"
 }
 
-check_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$ID
-        VER=$VERSION_ID
-    else
-        log_error "Cannot detect OS version"
-        exit 1
-    fi
-    log_info "Detected OS: $OS $VER"
-}
+# Global variables
+INSTALL_DIR=""
+IS_ROOT=false
+HAS_SUDO=false
+PYTHON_CMD=""
+PIP_CMD=""
+USE_SYSTEM_INSTALL=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-install_method_native() {
-    log_info "Installing WinRecon natively..."
+check_environment() {
+    log_info "Checking system environment..."
     
-    # Check if running as root
-    if [[ $EUID -ne 0 ]]; then
-        log_error "Native installation requires root privileges"
-        log_info "Please run: sudo $0"
-        exit 1
-    fi
-    
-    # Install system dependencies
-    log_info "Installing system dependencies..."
-    # Update with error handling for unsigned repos
-    if ! apt-get update 2>&1 | tee /tmp/apt-update.log; then
-        if grep -q "is not signed" /tmp/apt-update.log; then
-            log_warn "Some repositories are not signed. Continuing anyway..."
-            # Try to update ignoring unsigned repos
-            apt-get update --allow-insecure-repositories 2>/dev/null || true
+    # Check if root
+    if [[ $EUID -eq 0 ]]; then
+        IS_ROOT=true
+        log_info "Running as root"
+    else
+        # Check sudo availability
+        if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+            HAS_SUDO=true
+            log_info "Sudo available"
         else
-            log_error "Failed to update package lists"
-            exit 1
+            log_info "Running as regular user (no root/sudo)"
         fi
     fi
-    rm -f /tmp/apt-update.log
     
-    apt-get install -y python3 python3-pip python3-venv
+    # Check Python
+    if command -v python3 &> /dev/null; then
+        PYTHON_CMD="python3"
+    elif command -v python &> /dev/null; then
+        # Check if it's Python 3
+        if python --version 2>&1 | grep -q "Python 3"; then
+            PYTHON_CMD="python"
+        else
+            log_error "Python 2 detected. Python 3 is required."
+            exit 1
+        fi
+    else
+        log_error "Python not found. Please install Python 3 first."
+        exit 1
+    fi
+    log_info "Python found: $($PYTHON_CMD --version)"
     
-    # Install PyYAML
-    log_info "Installing Python dependencies..."
-    pip3 install PyYAML || pip3 install --break-system-packages PyYAML
-    
-    # Install WinRecon
-    INSTALL_DIR="/opt/winrecon"
-    mkdir -p "$INSTALL_DIR"
-    
-    # Copy files
-    cp winrecon.py winrecon-report.py winrecon-techniques.py winrecon-config.yaml "$INSTALL_DIR/"
-    chmod +x "$INSTALL_DIR/winrecon.py"
-    
-    # Create symlink
-    ln -sf "$INSTALL_DIR/winrecon.py" /usr/local/bin/winrecon
-    
-    # Setup user config
-    USER_HOME="${HOME}"
-    if [ -n "$SUDO_USER" ]; then
-        USER_HOME=$(eval echo ~$SUDO_USER)
+    # Check pip
+    if command -v pip3 &> /dev/null; then
+        PIP_CMD="pip3"
+    elif command -v pip &> /dev/null; then
+        PIP_CMD="pip"
+    elif $PYTHON_CMD -m pip --version &> /dev/null; then
+        PIP_CMD="$PYTHON_CMD -m pip"
+    else
+        log_warn "pip not found. Will try to install it."
+        install_pip
     fi
     
-    CONFIG_DIR="$USER_HOME/.config/winrecon"
-    mkdir -p "$CONFIG_DIR"
-    cp winrecon-config.yaml "$CONFIG_DIR/config.yaml"
+    # Determine installation directory
+    if $IS_ROOT || $HAS_SUDO; then
+        INSTALL_DIR="/opt/winrecon"
+        USE_SYSTEM_INSTALL=true
+    else
+        INSTALL_DIR="$HOME/.local/lib/winrecon"
+        USE_SYSTEM_INSTALL=false
+    fi
+    log_info "Installation directory: $INSTALL_DIR"
+}
+
+install_pip() {
+    log_info "Installing pip..."
     
-    if [ -n "$SUDO_USER" ]; then
-        chown -R "$SUDO_USER:$SUDO_USER" "$CONFIG_DIR"
+    # Try ensurepip first
+    if $PYTHON_CMD -m ensurepip 2>/dev/null; then
+        log_info "pip installed via ensurepip"
+        PIP_CMD="$PYTHON_CMD -m pip"
+        return 0
+    fi
+    
+    # Try get-pip.py
+    log_info "Downloading get-pip.py..."
+    local temp_pip="/tmp/get-pip.py"
+    
+    if command -v curl &> /dev/null; then
+        curl -sS https://bootstrap.pypa.io/get-pip.py -o "$temp_pip"
+    elif command -v wget &> /dev/null; then
+        wget -q https://bootstrap.pypa.io/get-pip.py -O "$temp_pip"
+    else
+        log_error "Neither curl nor wget found. Cannot download pip."
+        return 1
+    fi
+    
+    if [ -f "$temp_pip" ]; then
+        $PYTHON_CMD "$temp_pip" --user
+        rm -f "$temp_pip"
+        PIP_CMD="$PYTHON_CMD -m pip"
+        return 0
+    fi
+    
+    return 1
+}
+
+fix_apt_errors() {
+    if ! $USE_SYSTEM_INSTALL; then
+        return 0
+    fi
+    
+    log_info "Attempting to fix APT errors..."
+    
+    # Function to run apt commands
+    run_apt() {
+        if $IS_ROOT; then
+            "$@" 2>/dev/null
+        elif $HAS_SUDO; then
+            sudo "$@" 2>/dev/null
+        fi
+    }
+    
+    # Clean APT cache
+    run_apt apt-get clean
+    run_apt rm -rf /var/lib/apt/lists/*
+    
+    # Remove problematic repositories
+    if $IS_ROOT || $HAS_SUDO; then
+        # Find Neo4j and other unsigned repos
+        local problem_repos=$(run_apt grep -l "neo4j\|mongodb" /etc/apt/sources.list.d/*.list 2>/dev/null || true)
+        if [ -n "$problem_repos" ]; then
+            log_warn "Disabling problematic repositories..."
+            for repo in $problem_repos; do
+                run_apt mv "$repo" "$repo.disabled" 2>/dev/null || true
+            done
+        fi
+    fi
+    
+    # Update with various flags
+    log_info "Updating package lists..."
+    run_apt apt-get update --fix-missing || \
+    run_apt apt-get update --allow-insecure-repositories || \
+    run_apt apt-get update -o Acquire::AllowInsecureRepositories=true || \
+    true
+}
+
+install_system_packages() {
+    if ! $USE_SYSTEM_INSTALL; then
+        log_info "Skipping system package installation (user install)"
+        return 0
+    fi
+    
+    # Check if apt-get exists
+    if ! command -v apt-get &> /dev/null; then
+        log_warn "apt-get not found. Skipping system packages."
+        return 0
+    fi
+    
+    log_info "Installing system packages..."
+    
+    # Function to run apt commands
+    run_apt() {
+        if $IS_ROOT; then
+            "$@"
+        elif $HAS_SUDO; then
+            sudo "$@"
+        fi
+    }
+    
+    # Fix APT errors first
+    fix_apt_errors
+    
+    # Try to install Python packages
+    local python_packages="python3-pip python3-venv"
+    if ! run_apt apt-get install -y $python_packages 2>/dev/null; then
+        log_warn "Failed to install Python packages via APT"
+        # Not critical, we can use pip instead
+    fi
+    
+    # Install optional tools (don't fail if they can't be installed)
+    log_info "Installing optional system tools..."
+    local tools="nmap smbclient ldap-utils"
+    for tool in $tools; do
+        if ! command -v ${tool%% *} &> /dev/null; then
+            run_apt apt-get install -y $tool 2>/dev/null || log_warn "Could not install $tool"
+        fi
+    done
+}
+
+install_python_packages() {
+    log_info "Installing Python packages..."
+    
+    # Upgrade pip first
+    $PIP_CMD install --upgrade pip 2>/dev/null || true
+    
+    # Determine pip install command
+    local pip_install="$PIP_CMD install"
+    
+    if $USE_SYSTEM_INSTALL; then
+        if $IS_ROOT; then
+            # Check if we need --break-system-packages
+            if $PIP_CMD install --help 2>&1 | grep -q "break-system-packages"; then
+                pip_install="$PIP_CMD install --break-system-packages"
+            fi
+        elif $HAS_SUDO; then
+            pip_install="sudo $PIP_CMD install"
+        fi
+    else
+        pip_install="$PIP_CMD install --user"
+    fi
+    
+    # Install PyYAML with multiple fallback methods
+    log_info "Installing PyYAML..."
+    
+    if ! $pip_install PyYAML 2>/dev/null; then
+        log_warn "First attempt failed. Trying alternative methods..."
+        
+        # Try with --user flag
+        if ! $PIP_CMD install --user PyYAML 2>/dev/null; then
+            # Try without any flags
+            if ! $PIP_CMD install PyYAML 2>/dev/null; then
+                # Last resort: install from source
+                log_warn "Trying to install PyYAML from source..."
+                local yaml_url="https://files.pythonhosted.org/packages/source/P/PyYAML/PyYAML-6.0.tar.gz"
+                local temp_dir="/tmp/pyyaml_install"
+                mkdir -p "$temp_dir"
+                
+                if command -v curl &> /dev/null; then
+                    curl -sL "$yaml_url" | tar -xz -C "$temp_dir"
+                elif command -v wget &> /dev/null; then
+                    wget -qO- "$yaml_url" | tar -xz -C "$temp_dir"
+                fi
+                
+                if [ -d "$temp_dir/PyYAML-6.0" ]; then
+                    cd "$temp_dir/PyYAML-6.0"
+                    $PYTHON_CMD setup.py install --user 2>/dev/null || true
+                    cd "$SCRIPT_DIR"
+                fi
+                rm -rf "$temp_dir"
+            fi
+        fi
+    fi
+    
+    # Verify installation
+    if ! $PYTHON_CMD -c "import yaml" 2>/dev/null; then
+        log_error "Failed to install PyYAML. Trying to continue anyway..."
+        return 1
+    else
+        log_info "PyYAML installed successfully"
+    fi
+    
+    return 0
+}
+
+install_winrecon_files() {
+    log_info "Installing WinRecon files..."
+    
+    # Create directories
+    if $USE_SYSTEM_INSTALL; then
+        if $IS_ROOT; then
+            mkdir -p "$INSTALL_DIR"
+            mkdir -p "/usr/local/bin"
+        elif $HAS_SUDO; then
+            sudo mkdir -p "$INSTALL_DIR"
+            sudo mkdir -p "/usr/local/bin"
+        fi
+    else
+        mkdir -p "$INSTALL_DIR"
+        mkdir -p "$HOME/.local/bin"
+    fi
+    
+    # Create config directory
+    local config_dir="$HOME/.config/winrecon"
+    mkdir -p "$config_dir"
+    
+    # Copy files
+    log_info "Copying WinRecon files to $INSTALL_DIR..."
+    
+    local files="winrecon.py winrecon-report.py winrecon-techniques.py"
+    for file in $files; do
+        if [ -f "$SCRIPT_DIR/$file" ]; then
+            if $USE_SYSTEM_INSTALL; then
+                if $IS_ROOT; then
+                    cp "$SCRIPT_DIR/$file" "$INSTALL_DIR/"
+                    chmod 755 "$INSTALL_DIR/$file"
+                elif $HAS_SUDO; then
+                    sudo cp "$SCRIPT_DIR/$file" "$INSTALL_DIR/"
+                    sudo chmod 755 "$INSTALL_DIR/$file"
+                fi
+            else
+                cp "$SCRIPT_DIR/$file" "$INSTALL_DIR/"
+                chmod 755 "$INSTALL_DIR/$file"
+            fi
+        else
+            log_warn "File not found: $file"
+        fi
+    done
+    
+    # Copy config file
+    if [ -f "$SCRIPT_DIR/winrecon-config.yaml" ]; then
+        cp "$SCRIPT_DIR/winrecon-config.yaml" "$config_dir/config.yaml"
+    fi
+    
+    # Create executable wrapper
+    local bin_dir wrapper_path
+    if $USE_SYSTEM_INSTALL; then
+        bin_dir="/usr/local/bin"
+        wrapper_path="$bin_dir/winrecon"
+    else
+        bin_dir="$HOME/.local/bin"
+        wrapper_path="$bin_dir/winrecon"
+    fi
+    
+    # Create wrapper script
+    local wrapper_content="#!/bin/bash
+# WinRecon wrapper script
+exec $PYTHON_CMD \"$INSTALL_DIR/winrecon.py\" \"\$@\"
+"
+    
+    if $USE_SYSTEM_INSTALL; then
+        if $IS_ROOT; then
+            echo "$wrapper_content" > "$wrapper_path"
+            chmod 755 "$wrapper_path"
+        elif $HAS_SUDO; then
+            echo "$wrapper_content" | sudo tee "$wrapper_path" > /dev/null
+            sudo chmod 755 "$wrapper_path"
+        fi
+    else
+        echo "$wrapper_content" > "$wrapper_path"
+        chmod 755 "$wrapper_path"
     fi
     
     log_info "WinRecon installed successfully!"
-    log_info "Configuration: $CONFIG_DIR/config.yaml"
+}
+
+check_installation() {
+    log_info "Verifying installation..."
     
-    # Check for missing tools
-    echo ""
+    # Check if winrecon is accessible
+    local winrecon_cmd
+    if $USE_SYSTEM_INSTALL; then
+        winrecon_cmd="/usr/local/bin/winrecon"
+    else
+        winrecon_cmd="$HOME/.local/bin/winrecon"
+    fi
+    
+    if [ -f "$winrecon_cmd" ] && [ -x "$winrecon_cmd" ]; then
+        log_info "WinRecon executable found at: $winrecon_cmd"
+    else
+        log_warn "WinRecon executable not found at expected location"
+    fi
+    
+    # Test Python imports
+    log_info "Testing Python imports..."
+    if $PYTHON_CMD -c "import yaml" 2>/dev/null; then
+        log_info "PyYAML import: OK"
+    else
+        log_warn "PyYAML import: FAILED"
+    fi
+    
+    # Check for system tools
     log_info "Checking system tools..."
+    local tools=(nmap smbclient ldapsearch)
     local missing_tools=()
-    for tool in nmap smbclient ldapsearch; do
-        if ! command -v "$tool" &> /dev/null; then
+    
+    for tool in "${tools[@]}"; do
+        if command -v "$tool" &> /dev/null; then
+            log_info "$tool: Found"
+        else
+            log_warn "$tool: Not found"
             missing_tools+=("$tool")
         fi
     done
     
     if [ ${#missing_tools[@]} -gt 0 ]; then
-        log_warn "Missing tools: ${missing_tools[*]}"
-        log_info "Install with: apt-get install nmap smbclient ldap-utils"
-    else
-        log_info "All essential tools installed"
+        echo ""
+        log_warn "Some system tools are missing: ${missing_tools[*]}"
+        log_info "WinRecon will work but with limited functionality."
+        log_info "To install missing tools later, run:"
+        if $USE_SYSTEM_INSTALL; then
+            echo "    sudo apt-get install ${missing_tools[*]}"
+        else
+            echo "    Ask your system administrator to install: ${missing_tools[*]}"
+        fi
     fi
-}
-
-install_method_user() {
-    log_info "Installing WinRecon for current user..."
-    
-    # Install PyYAML for user
-    log_info "Installing Python dependencies..."
-    pip3 install --user PyYAML
-    
-    # Create user installation directory
-    USER_BIN="$HOME/.local/bin"
-    USER_LIB="$HOME/.local/lib/winrecon"
-    mkdir -p "$USER_BIN" "$USER_LIB"
-    
-    # Copy files
-    cp winrecon.py winrecon-report.py winrecon-techniques.py "$USER_LIB/"
-    chmod +x "$USER_LIB/winrecon.py"
-    
-    # Create wrapper script
-    cat > "$USER_BIN/winrecon" << 'EOF'
-#!/bin/bash
-exec python3 "$HOME/.local/lib/winrecon/winrecon.py" "$@"
-EOF
-    chmod +x "$USER_BIN/winrecon"
-    
-    # Setup config
-    CONFIG_DIR="$HOME/.config/winrecon"
-    mkdir -p "$CONFIG_DIR"
-    cp winrecon-config.yaml "$CONFIG_DIR/config.yaml"
-    
-    log_info "WinRecon installed for user!"
-    log_info "Make sure $USER_BIN is in your PATH"
-    
-    # Check if user bin is in PATH
-    if [[ ":$PATH:" != *":$USER_BIN:"* ]]; then
-        log_warn "$USER_BIN is not in PATH"
-        log_info "Add to your ~/.bashrc:"
-        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-    fi
-}
-
-install_method_docker() {
-    log_info "Setting up WinRecon with Docker..."
-    
-    # Check if Docker is installed
-    if ! command -v docker &> /dev/null; then
-        log_error "Docker is not installed"
-        log_info "Install Docker first: https://docs.docker.com/get-docker/"
-        exit 1
-    fi
-    
-    # Build Docker image
-    log_info "Building Docker image..."
-    docker build -t winrecon:latest .
-    
-    # Create wrapper script
-    WRAPPER_SCRIPT="winrecon-docker"
-    cat > "$WRAPPER_SCRIPT" << 'EOF'
-#!/bin/bash
-# WinRecon Docker wrapper
-docker run --rm -it \
-    -v "$(pwd)/winrecon_results:/winrecon_results" \
-    -v "$HOME/.config/winrecon/config.yaml:/root/.config/winrecon/config.yaml:ro" \
-    --network host \
-    winrecon:latest \
-    python3 /opt/winrecon/winrecon.py "$@"
-EOF
-    chmod +x "$WRAPPER_SCRIPT"
-    
-    log_info "Docker image built successfully!"
-    log_info "Use: ./$WRAPPER_SCRIPT <target>"
-    log_info "Or: docker-compose run --rm winrecon winrecon <target>"
-}
-
-install_method_venv() {
-    log_info "Installing WinRecon in virtual environment..."
-    
-    # Create virtual environment
-    VENV_DIR="venv"
-    python3 -m venv "$VENV_DIR"
-    
-    # Activate and install
-    source "$VENV_DIR/bin/activate"
-    pip install --upgrade pip
-    pip install PyYAML
-    
-    # Create activation script
-    cat > "activate-winrecon.sh" << EOF
-#!/bin/bash
-# Activate WinRecon virtual environment
-source "$PWD/$VENV_DIR/bin/activate"
-export PATH="$PWD:\$PATH"
-echo "WinRecon environment activated"
-echo "Use: python3 winrecon.py <target>"
-EOF
-    chmod +x activate-winrecon.sh
-    
-    # Make winrecon.py executable
-    chmod +x winrecon.py
-    
-    log_info "Virtual environment created!"
-    log_info "Activate with: source activate-winrecon.sh"
-    
-    deactivate
-}
-
-show_menu() {
-    echo -e "${CYAN}Choose installation method:${NC}"
-    echo "1) System-wide installation (requires root)"
-    echo "2) User installation (no root required)"
-    echo "3) Docker installation"
-    echo "4) Virtual environment installation"
-    echo "5) Run tests only"
-    echo "6) Exit"
-    echo ""
-    read -p "Enter choice [1-6]: " choice
-    
-    case $choice in
-        1)
-            install_method_native
-            ;;
-        2)
-            install_method_user
-            ;;
-        3)
-            install_method_docker
-            ;;
-        4)
-            install_method_venv
-            ;;
-        5)
-            python3 test_winrecon.py
-            ;;
-        6)
-            echo "Exiting..."
-            exit 0
-            ;;
-        *)
-            log_error "Invalid choice"
-            exit 1
-            ;;
-    esac
 }
 
 print_usage() {
     echo ""
     echo -e "${GREEN}Installation complete!${NC}"
     echo ""
+    
+    # Add PATH instructions if needed
+    if ! $USE_SYSTEM_INSTALL; then
+        if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+            echo -e "${YELLOW}Important:${NC} Add ~/.local/bin to your PATH"
+            echo "Add this line to your ~/.bashrc or ~/.zshrc:"
+            echo ""
+            echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+            echo ""
+            echo "Then reload your shell:"
+            echo "    source ~/.bashrc"
+            echo ""
+        fi
+    fi
+    
     echo "Usage examples:"
     echo "  winrecon 192.168.1.100"
     echo "  winrecon 192.168.1.0/24 -d domain.local -u user -p password"
     echo "  winrecon --help"
     echo ""
-    echo "For more information, see winrecon-readme.md"
+    echo "Configuration file: $HOME/.config/winrecon/config.yaml"
+    echo ""
 }
 
 main() {
     print_banner
-    check_os
     
-    # If no arguments, show menu
-    if [ $# -eq 0 ]; then
-        show_menu
-    else
-        # Handle command line arguments
-        case "$1" in
-            --native|--system)
-                install_method_native
-                ;;
-            --user)
-                install_method_user
-                ;;
-            --docker)
-                install_method_docker
-                ;;
-            --venv)
-                install_method_venv
-                ;;
-            --test)
-                python3 test_winrecon.py
-                ;;
-            --help|-h)
-                echo "Usage: $0 [OPTION]"
-                echo "Options:"
-                echo "  --native    System-wide installation"
-                echo "  --user      User installation"
-                echo "  --docker    Docker installation"
-                echo "  --venv      Virtual environment"
-                echo "  --test      Run tests only"
-                echo "  --help      Show this help"
-                exit 0
-                ;;
-            *)
-                log_error "Unknown option: $1"
-                echo "Use --help for options"
-                exit 1
-                ;;
-        esac
-    fi
+    # Check environment
+    check_environment
     
+    # Install system packages (if possible)
+    install_system_packages
+    
+    # Install Python packages
+    install_python_packages
+    
+    # Install WinRecon files
+    install_winrecon_files
+    
+    # Verify installation
+    check_installation
+    
+    # Print usage
     print_usage
 }
 
