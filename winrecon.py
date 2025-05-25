@@ -648,26 +648,43 @@ class WinReconScanner:
                 spec.loader.exec_module(winrecon_report)
                 
                 # Create report generator instance
-                report_gen = winrecon_report.ReportGenerator(str(target_dir))
-                
-                # Generate all report formats based on config
-                if self.config.get('reporting', {}).get('generate_html', True):
-                    self.logger.info("Generating HTML report...")
-                    report_gen.generate_html_report()
-                
-                if self.config.get('reporting', {}).get('generate_json', True):
-                    self.logger.info("Generating JSON report...")
-                    report_gen.generate_json_report()
-                
-                if self.config.get('reporting', {}).get('generate_csv', True):
-                    self.logger.info("Generating CSV report...")
-                    report_gen.generate_csv_reports()
-                
-                self.logger.info(f"Reports generated successfully for {target.ip}")
-                print(f"\n[*] Reports generated in: {target_dir}/report/")
-                print(f"    - HTML Report: {target_dir}/report/report.html")
-                print(f"    - JSON Report: {target_dir}/report/report.json")
-                print(f"    - CSV Reports: {target_dir}/report/*.csv")
+                # The class is WinReconReportGenerator, not ReportGenerator
+                if hasattr(winrecon_report, 'WinReconReportGenerator'):
+                    report_gen = winrecon_report.WinReconReportGenerator(
+                        self.config, 
+                        self.logger
+                    )
+                    
+                    # Prepare results data
+                    results = {
+                        'target': target.ip,
+                        'hostname': target.hostname,
+                        'domain': target.domain,
+                        'open_ports': list(target.open_ports) if target.open_ports else [],
+                        'services': target.services if hasattr(target, 'services') else {},
+                        'scan_dir': str(target_dir)
+                    }
+                    
+                    # Generate reports
+                    if self.config.get('reporting', {}).get('generate_html', True):
+                        self.logger.info("Generating HTML report...")
+                        report_gen.generate_html_report(
+                            results, 
+                            target_dir / 'report' / 'report.html'
+                        )
+                    
+                    if self.config.get('reporting', {}).get('generate_json', True):
+                        self.logger.info("Generating JSON report...")
+                        json_file = target_dir / 'report' / 'report.json'
+                        with open(json_file, 'w') as f:
+                            json.dump(results, f, indent=2)
+                    
+                    self.logger.info(f"Reports generated successfully for {target.ip}")
+                    print(f"\n[*] Reports generated in: {target_dir}/report/")
+                else:
+                    # Try alternative report generator if exists
+                    raise ImportError("WinReconReportGenerator not found in module")
+                # Already handled above
             else:
                 raise ImportError("Could not load report generator module")
                 

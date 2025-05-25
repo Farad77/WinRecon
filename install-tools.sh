@@ -88,10 +88,9 @@ install_tools() {
         echo -e "  ${GREEN}✓${NC} enum4linux already installed"
     fi
     
-    # Install other tools
-    for tool in gobuster nikto python3-impacket; do
-        pkg_name=${tool%%-*}
-        if command -v $pkg_name &> /dev/null || dpkg -l $tool &> /dev/null; then
+    # Install gobuster and nikto from APT
+    for tool in gobuster nikto; do
+        if command -v $tool &> /dev/null; then
             echo -e "  ${GREEN}✓${NC} $tool already installed"
         else
             echo -e "  ${YELLOW}*${NC} Installing $tool..."
@@ -99,6 +98,45 @@ install_tools() {
             echo -e "  ${RED}✗${NC} Failed to install $tool"
         fi
     done
+    
+    # Install Impacket (for secretsdump, GetNPUsers, etc.)
+    echo -e "  ${YELLOW}*${NC} Installing Impacket suite..."
+    if command -v impacket-secretsdump &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} Impacket already installed"
+    else
+        # Try multiple methods
+        # Method 1: From Kali/Debian repos
+        apt-get install -y python3-impacket impacket-scripts 2>/dev/null
+        
+        # Method 2: From pip if apt fails
+        if ! command -v impacket-secretsdump &> /dev/null; then
+            pip3 install impacket 2>/dev/null
+            
+            # Create symlinks for impacket scripts
+            if [ -d "/usr/local/lib/python3.*/dist-packages/impacket/examples" ]; then
+                for script in /usr/local/lib/python3.*/dist-packages/impacket/examples/*.py; do
+                    if [ -f "$script" ]; then
+                        script_name=$(basename "$script" .py)
+                        ln -sf "$script" "/usr/local/bin/impacket-$script_name" 2>/dev/null
+                    fi
+                done
+            fi
+        fi
+        
+        # Method 3: Clone from GitHub
+        if ! command -v impacket-secretsdump &> /dev/null; then
+            git clone https://github.com/SecureAuthCorp/impacket.git /opt/impacket 2>/dev/null && \
+            cd /opt/impacket && \
+            pip3 install . 2>/dev/null && \
+            cd - > /dev/null
+        fi
+        
+        if command -v impacket-secretsdump &> /dev/null || [ -f /usr/local/bin/secretsdump.py ]; then
+            echo -e "  ${GREEN}✓${NC} Impacket installed"
+        else
+            echo -e "  ${RED}✗${NC} Failed to install Impacket"
+        fi
+    fi
     
     # Install kerbrute
     if ! command -v kerbrute &> /dev/null && ! [ -f /usr/local/bin/kerbrute ]; then
@@ -122,27 +160,57 @@ install_tools() {
         curl -sS https://bootstrap.pypa.io/get-pip.py | python3
     fi
     
-    # Install bloodhound
+    # Install bloodhound-python
     echo -e "  ${YELLOW}*${NC} Installing bloodhound-python..."
-    pip3 install bloodhound 2>/dev/null && \
-    echo -e "  ${GREEN}✓${NC} bloodhound-python installed" || \
-    echo -e "  ${RED}✗${NC} Failed to install bloodhound-python"
-    
-    # Install crackmapexec via pipx
-    if ! command -v crackmapexec &> /dev/null && ! command -v cme &> /dev/null; then
-        echo -e "  ${YELLOW}*${NC} Installing crackmapexec..."
+    if command -v bloodhound-python &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} bloodhound-python already installed"
+    else
+        # The correct package name is 'bloodhound'
+        pip3 install bloodhound 2>/dev/null
         
-        # Install pipx if needed
-        if ! command -v pipx &> /dev/null; then
-            apt-get install -y pipx 2>/dev/null || pip3 install pipx
+        # Check if installed
+        if python3 -c "import bloodhound" 2>/dev/null || command -v bloodhound-python &> /dev/null; then
+            echo -e "  ${GREEN}✓${NC} bloodhound-python installed"
+        else
+            echo -e "  ${RED}✗${NC} Failed to install bloodhound-python"
+        fi
+    fi
+    
+    # Install crackmapexec (now called NetExec)
+    echo -e "  ${YELLOW}*${NC} Installing crackmapexec/netexec..."
+    if command -v crackmapexec &> /dev/null || command -v cme &> /dev/null || command -v netexec &> /dev/null || command -v nxc &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} crackmapexec/netexec already installed"
+    else
+        # Method 1: Try apt (for Kali/Parrot)
+        apt-get install -y crackmapexec 2>/dev/null
+        
+        # Method 2: Install via pipx (recommended)
+        if ! command -v crackmapexec &> /dev/null && ! command -v cme &> /dev/null; then
+            # Ensure pipx is installed
+            if ! command -v pipx &> /dev/null; then
+                apt-get install -y pipx 2>/dev/null || pip3 install --user pipx 2>/dev/null
+                export PATH="$HOME/.local/bin:$PATH"
+            fi
+            
+            # Try installing NetExec (new name)
+            pipx install netexec 2>/dev/null
+            
+            # If that fails, try the old crackmapexec
+            if ! command -v nxc &> /dev/null && ! command -v netexec &> /dev/null; then
+                pipx install crackmapexec 2>/dev/null
+            fi
         fi
         
-        # Install cme
-        pipx install crackmapexec 2>/dev/null && \
-        echo -e "  ${GREEN}✓${NC} crackmapexec installed" || \
-        echo -e "  ${RED}✗${NC} Failed to install crackmapexec"
-    else
-        echo -e "  ${GREEN}✓${NC} crackmapexec already installed"
+        # Method 3: Direct pip install
+        if ! command -v crackmapexec &> /dev/null && ! command -v cme &> /dev/null && ! command -v netexec &> /dev/null && ! command -v nxc &> /dev/null; then
+            pip3 install crackmapexec 2>/dev/null || pip3 install netexec 2>/dev/null
+        fi
+        
+        if command -v crackmapexec &> /dev/null || command -v cme &> /dev/null || command -v netexec &> /dev/null || command -v nxc &> /dev/null; then
+            echo -e "  ${GREEN}✓${NC} crackmapexec/netexec installed"
+        else
+            echo -e "  ${RED}✗${NC} Failed to install crackmapexec/netexec"
+        fi
     fi
 }
 
@@ -167,13 +235,31 @@ show_manual_instructions() {
     echo "   sudo chmod +x /usr/local/bin/enum4linux"
     
     echo -e "\n${BLUE}4. Install impacket:${NC}"
-    echo "   sudo apt-get install -y python3-impacket"
-    echo "   # OR"
+    echo "   # Method 1: From package manager"
+    echo "   sudo apt-get install -y python3-impacket impacket-scripts"
+    echo "   "
+    echo "   # Method 2: From pip"
     echo "   pip3 install impacket"
+    echo "   "
+    echo "   # Method 3: From source"
+    echo "   git clone https://github.com/SecureAuthCorp/impacket.git"
+    echo "   cd impacket && pip3 install ."
     
-    echo -e "\n${BLUE}5. Install other tools:${NC}"
-    echo "   sudo apt-get install -y gobuster nikto"
+    echo -e "\n${BLUE}5. Install crackmapexec/netexec:${NC}"
+    echo "   # The tool was renamed to NetExec"
+    echo "   pipx install netexec"
+    echo "   # OR the old version"
+    echo "   pipx install crackmapexec"
+    echo "   "
+    echo "   # Make sure ~/.local/bin is in PATH:"
+    echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
+    
+    echo -e "\n${BLUE}6. Install bloodhound-python:${NC}"
     echo "   pip3 install bloodhound"
+    echo "   # The package name is 'bloodhound' not 'bloodhound-python'"
+    
+    echo -e "\n${BLUE}7. Install other tools:${NC}"
+    echo "   sudo apt-get install -y gobuster nikto"
     
     echo -e "\n${YELLOW}══════════════════════════════════════════════════════════════${NC}"
 }
@@ -189,19 +275,26 @@ main() {
     
     # Check what's still missing
     echo -e "\n${BLUE}Tool Status:${NC}"
-    tools=("nmap" "smbclient" "ldapsearch" "enum4linux" "kerbrute" "gobuster" "nikto" "impacket-secretsdump" "crackmapexec" "bloodhound-python")
+    # Updated tool check list
+    echo -e "  ${BLUE}Checking nmap:${NC} $(command -v nmap &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking smbclient:${NC} $(command -v smbclient &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking ldapsearch:${NC} $(command -v ldapsearch &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking enum4linux:${NC} $(command -v enum4linux &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking kerbrute:${NC} $(command -v kerbrute &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking gobuster:${NC} $(command -v gobuster &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking nikto:${NC} $(command -v nikto &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking impacket:${NC} $(command -v impacket-secretsdump &> /dev/null || command -v secretsdump.py &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking crackmapexec/netexec:${NC} $(command -v crackmapexec &> /dev/null || command -v cme &> /dev/null || command -v netexec &> /dev/null || command -v nxc &> /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    echo -e "  ${BLUE}Checking bloodhound:${NC} $(python3 -c "import bloodhound" 2>/dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+    
+    # Count missing tools
+    missing_count=0
+    ! command -v impacket-secretsdump &> /dev/null && ! command -v secretsdump.py &> /dev/null && ((missing_count++))
+    ! command -v crackmapexec &> /dev/null && ! command -v cme &> /dev/null && ! command -v netexec &> /dev/null && ! command -v nxc &> /dev/null && ((missing_count++))
+    ! python3 -c "import bloodhound" 2>/dev/null && ((missing_count++))
     missing=()
     
-    for tool in "${tools[@]}"; do
-        if command -v ${tool%%-*} &> /dev/null || [ -f "/usr/local/bin/${tool%%-*}" ]; then
-            echo -e "  ${GREEN}✓${NC} $tool"
-        else
-            echo -e "  ${RED}✗${NC} $tool"
-            missing+=("$tool")
-        fi
-    done
-    
-    if [ ${#missing[@]} -gt 0 ]; then
+    if [ $missing_count -gt 0 ]; then
         show_manual_instructions
     else
         echo -e "\n${GREEN}All tools installed successfully!${NC}"

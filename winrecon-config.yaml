@@ -22,11 +22,12 @@ tools:
   smbclient: "/usr/bin/smbclient"
   enum4linux: "/usr/local/bin/enum4linux"
   windapsearch: "python3 /opt/windapsearch/windapsearch.py"
-  bloodhound: "bloodhound-python"
-  crackmapexec: "crackmapexec"
-  impacket-secretsdump: "impacket-secretsdump"
-  impacket-GetNPUsers: "impacket-GetNPUsers"
-  impacket-GetUserSPNs: "impacket-GetUserSPNs"
+  bloodhound: "bloodhound-python"  # or just 'bloodhound' if installed via pip
+  crackmapexec: "cme"  # crackmapexec or cme or netexec or nxc
+  netexec: "nxc"  # new name for crackmapexec
+  impacket-secretsdump: "impacket-secretsdump"  # or secretsdump.py
+  impacket-GetNPUsers: "impacket-GetNPUsers"  # or GetNPUsers.py
+  impacket-GetUserSPNs: "impacket-GetUserSPNs"  # or GetUserSPNs.py
   kerbrute: "/usr/local/bin/kerbrute"
   gobuster: "/usr/bin/gobuster"
   nikto: "/usr/bin/nikto"
