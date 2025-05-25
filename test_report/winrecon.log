@@ -1,0 +1,15 @@
+2025-05-25 19:19:07,842 - INFO - Auto-detecting tool paths...
+2025-05-25 19:19:08,536 - INFO - Auto-detected 8 tool paths
+2025-05-25 19:19:09,106 - WARNING - Missing tools detected: enum4linux, crackmapexec, impacket-GetNPUsers, impacket-GetUserSPNs
+2025-05-25 19:19:09,106 - INFO - Starting WinRecon
+2025-05-25 19:19:09,108 - INFO - Starting comprehensive scan of 127.0.0.1
+2025-05-25 19:19:09,127 - INFO - Starting Nmap scan for 127.0.0.1
+2025-05-25 19:19:09,128 - INFO - Running TCP and UDP scans in parallel for 127.0.0.1
+2025-05-25 19:19:22,339 - INFO - Completed scan of 127.0.0.1
+2025-05-25 19:19:22,340 - INFO - Generating reports for 127.0.0.1
+2025-05-25 19:19:22,385 - INFO - HTML report generated: test_report/127.0.0.1/report/report.html
+2025-05-25 19:19:22,405 - INFO - JSON report generated: test_report/127.0.0.1/report/report.json
+2025-05-25 19:19:22,408 - INFO - Text summary generated: test_report/127.0.0.1/report/summary.txt
+2025-05-25 19:19:22,409 - INFO - Reports generated successfully for 127.0.0.1
+2025-05-25 19:19:22,410 - INFO - Global summary saved to: test_report/global_summary.txt
+2025-05-25 19:19:22,411 - INFO - WinRecon completed

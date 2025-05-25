@@ -74,14 +74,18 @@ class Target:
 class WinReconScanner:
     """Scanner principal pour l'énumération Windows/AD"""
     
-    def __init__(self, config: Dict, no_prompt: bool = False):
+    def __init__(self, config: Dict, no_prompt: bool = False, no_auto_detect: bool = False):
         self.config = config
         self.no_prompt = no_prompt
+        self.no_auto_detect = no_auto_detect
         self.targets: List[Target] = []
         self.results_dir = Path(config['output_dir'])
         # Create results directory before setting up logging
         self.results_dir.mkdir(exist_ok=True)
         self.setup_logging()
+        # Auto-detect and update tool paths (unless disabled)
+        if not self.no_auto_detect:
+            self.detect_and_update_tools()
         self.ensure_tools_available()
         
     def setup_logging(self):
@@ -101,6 +105,87 @@ class WinReconScanner:
             ]
         )
         self.logger = logging.getLogger(__name__)
+    
+    def detect_and_update_tools(self):
+        """Détecte automatiquement les chemins des outils et met à jour la configuration"""
+        print("[*] Auto-detecting tool paths...")
+        self.logger.info("Auto-detecting tool paths...")
+        
+        # Dictionnaire des outils avec leurs noms alternatifs
+        tool_alternatives = {
+            'crackmapexec': ['cme', 'crackmapexec', 'nxc', 'netexec'],
+            'impacket-secretsdump': ['impacket-secretsdump', 'secretsdump.py', 'secretsdump'],
+            'impacket-GetNPUsers': ['impacket-GetNPUsers', 'GetNPUsers.py', 'GetNPUsers'],
+            'impacket-GetUserSPNs': ['impacket-GetUserSPNs', 'GetUserSPNs.py', 'GetUserSPNs'],
+            'bloodhound': ['bloodhound-python', 'bloodhound.py', 'bloodhound'],
+            'enum4linux': ['enum4linux'],
+            'kerbrute': ['kerbrute'],
+            'nmap': ['nmap'],
+            'smbclient': ['smbclient'],
+            'ldapsearch': ['ldapsearch'],
+            'gobuster': ['gobuster'],
+            'nikto': ['nikto']
+        }
+        
+        updated_tools = {}
+        
+        for tool_key, alternatives in tool_alternatives.items():
+            detected_path = self._find_tool_path(alternatives)
+            if detected_path:
+                # Only update if different from current config
+                current_path = self.config['tools'].get(tool_key, '')
+                if current_path != detected_path:
+                    updated_tools[tool_key] = detected_path
+                    self.config['tools'][tool_key] = detected_path
+                    self.logger.debug(f"Updated {tool_key}: {detected_path}")
+        
+        # Special case for BloodHound - check if it's available as Python module
+        if 'bloodhound' not in updated_tools:
+            try:
+                import subprocess
+                result = subprocess.run(['python3', '-c', 'import bloodhound'], 
+                                      capture_output=True, text=True)
+                if result.returncode == 0:
+                    updated_tools['bloodhound'] = 'python3 -m bloodhound'
+                    self.config['tools']['bloodhound'] = 'python3 -m bloodhound'
+                    self.logger.debug("BloodHound available as Python module")
+            except:
+                pass
+        
+        if updated_tools:
+            print(f"[*] Auto-detected and updated {len(updated_tools)} tool paths")
+            self.logger.info(f"Auto-detected {len(updated_tools)} tool paths")
+            for tool, path in updated_tools.items():
+                self.logger.debug(f"  {tool}: {path}")
+        else:
+            self.logger.debug("No tool path updates needed")
+    
+    def _find_tool_path(self, tool_names: List[str]) -> Optional[str]:
+        """Trouve le chemin d'un outil parmi plusieurs noms possibles"""
+        import shutil
+        
+        for name in tool_names:
+            # Check if command is available in PATH
+            path = shutil.which(name)
+            if path:
+                return name  # Return the command name, not full path for flexibility
+            
+            # Check common installation directories
+            common_dirs = [
+                '/usr/local/bin',
+                '/usr/bin', 
+                '/opt',
+                f'{Path.home()}/.local/bin'
+            ]
+            
+            for directory in common_dirs:
+                full_path = Path(directory) / name
+                if full_path.exists() and full_path.is_file():
+                    # Check if executable
+                    if os.access(full_path, os.X_OK):
+                        return str(full_path)
+        
+        return None
         
     def ensure_tools_available(self):
         """Vérifie que les outils nécessaires sont disponibles"""
@@ -637,7 +722,35 @@ class WinReconScanner:
         self.logger.info(f"Generating reports for {target.ip}")
         
         try:
-            # Import report generator dynamically
+            # Try to use the simple report generator first
+            try:
+                from simple_report import SimpleReportGenerator
+                report_gen = SimpleReportGenerator(self.config, self.logger)
+                
+                # Prepare results data
+                results = {
+                    'target': target.ip,
+                    'hostname': target.hostname,
+                    'domain': target.domain,
+                    'open_ports': list(target.open_ports) if target.open_ports else [],
+                    'services': target.services if hasattr(target, 'services') else {},
+                    'scan_dir': str(target_dir)
+                }
+                
+                # Generate reports
+                report_gen.generate_reports(results, target_dir)
+                
+                self.logger.info(f"Reports generated successfully for {target.ip}")
+                print(f"\n[*] Reports generated in: {target_dir}/report/")
+                print(f"    - HTML Report: {target_dir}/report/report.html")
+                print(f"    - JSON Report: {target_dir}/report/report.json")
+                print(f"    - Text Summary: {target_dir}/report/summary.txt")
+                return
+                
+            except ImportError:
+                self.logger.debug("Simple report generator not available, trying advanced generator...")
+            
+            # Fallback to advanced report generator
             import importlib.util
             spec = importlib.util.spec_from_file_location(
                 "winrecon_report", 
@@ -648,7 +761,6 @@ class WinReconScanner:
                 spec.loader.exec_module(winrecon_report)
                 
                 # Create report generator instance
-                # The class is WinReconReportGenerator, not ReportGenerator
                 if hasattr(winrecon_report, 'WinReconReportGenerator'):
                     report_gen = winrecon_report.WinReconReportGenerator(
                         self.config, 
@@ -682,7 +794,9 @@ class WinReconScanner:
                     self.logger.info(f"Reports generated successfully for {target.ip}")
                     print(f"\n[*] Reports generated in: {target_dir}/report/")
                 else:
-                    # Try alternative report generator if exists
+                    # Debug what's available
+                    available_attrs = [attr for attr in dir(winrecon_report) if not attr.startswith('_')]
+                    self.logger.error(f"WinReconReportGenerator not found. Available: {available_attrs}")
                     raise ImportError("WinReconReportGenerator not found in module")
                 # Already handled above
             else:
@@ -896,6 +1010,8 @@ Examples:
                        help='Timeout per command in seconds (default: 3600)')
     parser.add_argument('--no-prompt', action='store_true',
                        help='Disable interactive credential prompting')
+    parser.add_argument('--no-auto-detect', action='store_true',
+                       help='Disable automatic tool detection')
     
     # Credentials
     cred_group = parser.add_argument_group('credentials')
@@ -987,7 +1103,7 @@ Examples:
     print("-" * 50)
     
     # Lancer le scanner
-    scanner = WinReconScanner(config, no_prompt=args.no_prompt)
+    scanner = WinReconScanner(config, no_prompt=args.no_prompt, no_auto_detect=args.no_auto_detect)
     
     try:
         asyncio.run(scanner.run(all_targets))

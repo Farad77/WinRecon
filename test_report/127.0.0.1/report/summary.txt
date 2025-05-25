@@ -1,0 +1,27 @@
+WinRecon Scan Summary
+====================
+
+Target: 127.0.0.1
+Scan Date: 2025-05-25 19:19:22
+
+Target Information:
+------------------
+IP Address: 127.0.0.1
+Hostname: N/A
+Domain: N/A
+
+Open Ports:
+-----------
+No open ports detected
+
+Scan Results Location:
+---------------------
+test_report/127.0.0.1
+
+For detailed results, check the subdirectories:
+- /scans/nmap/     - Port scanning results
+- /scans/smb/      - SMB enumeration
+- /scans/ldap/     - LDAP/AD enumeration
+- /scans/web/      - Web service enumeration
+- /loot/           - Extracted credentials and hashes
+- /report/         - Generated reports

@@ -1,0 +1,96 @@
+# Nmap 7.80 scan initiated Sun May 25 19:19:09 2025 as: nmap -sC -sV -O -A -Pn -oA test_report/127.0.0.1/scans/nmap/tcp_full 127.0.0.1
+Nmap scan report for localhost (127.0.0.1)
+Host is up (0.000057s latency).
+Not shown: 998 closed ports
+PORT     STATE SERVICE    VERSION
+5432/tcp open  postgresql PostgreSQL DB 9.6.0 or later
+| fingerprint-strings: 
+|   SMBProgNeg: 
+|     SFATAL
+|     VFATAL
+|     C0A000
+|     Munsupported frontend protocol 65363.19778: server supports 3.0 to 3.0
+|     Fpostmaster.c
+|     L2144
+|_    RProcessStartupPacket
+| ssl-cert: Subject: commonName=MSI.
+| Subject Alternative Name: DNS:MSI.
+| Not valid before: 2025-05-23T10:10:04
+|_Not valid after:  2035-05-21T10:10:04
+8000/tcp open  http-alt   uvicorn
+| fingerprint-strings: 
+|   FourOhFourRequest, GetRequest: 
+|     HTTP/1.1 200 OK
+|     date: Sun, 25 May 2025 15:19:20 GMT
+|     server: uvicorn
+|     content-type: text/html
+|     content-length: 6173
+|     content-disposition: inline; filename="index.html"
+|     last-modified: Thu, 17 Apr 2025 06:50:35 GMT
+|     permissions-policy: publickey-credentials-get=(self), clipboard-write=(self), accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), navigation-override=(), payment=(), picture-in-picture=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=(), clipboard-read=(), gamepad=(), speaker-selection=()
+|     content-security-policy: worker-src 'self'; style-src 'self' 'unsafe-inline';
+|   X11Probe: 
+|     HTTP/1.1 400 Bad Request
+|     date: Sun, 25 May 2025 15:19:20 GMT
+|     server: uvicorn
+|     content-type: text/plain; charset=utf-8
+|     content-length: 30
+|     connection: close
+|_    Invalid HTTP request received.
+| http-robots.txt: 1 disallowed entry 
+|_/
+|_http-server-header: uvicorn
+|_http-title: Site doesn't have a title (text/html).
+2 services unrecognized despite returning data. If you know the service/version, please submit the following fingerprints at https://nmap.org/cgi-bin/submit.cgi?new-service :
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port5432-TCP:V=7.80%I=7%D=5/25%Time=683334F3%P=x86_64-pc-linux-gnu%r(SM
+SF:BProgNeg,8C,"E\0\0\0\x8bSFATAL\0VFATAL\0C0A000\0Munsupported\x20fronten
+SF:d\x20protocol\x2065363\.19778:\x20server\x20supports\x203\.0\x20to\x203
+SF:\.0\0Fpostmaster\.c\0L2144\0RProcessStartupPacket\0\0");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port8000-TCP:V=7.80%I=7%D=5/25%Time=683334F8%P=x86_64-pc-linux-gnu%r(Ge
+SF:tRequest,1DA6,"HTTP/1\.1\x20200\x20OK\r\ndate:\x20Sun,\x2025\x20May\x20
+SF:2025\x2015:19:20\x20GMT\r\nserver:\x20uvicorn\r\ncontent-type:\x20text/
+SF:html\r\ncontent-length:\x206173\r\ncontent-disposition:\x20inline;\x20f
+SF:ilename=\"index\.html\"\r\nlast-modified:\x20Thu,\x2017\x20Apr\x202025\
+SF:x2006:50:35\x20GMT\r\npermissions-policy:\x20publickey-credentials-get=
+SF:\(self\),\x20clipboard-write=\(self\),\x20accelerometer=\(\),\x20ambien
+SF:t-light-sensor=\(\),\x20autoplay=\(\),\x20battery=\(\),\x20camera=\(\),
+SF:\x20cross-origin-isolated=\(\),\x20display-capture=\(\),\x20document-do
+SF:main=\(\),\x20encrypted-media=\(\),\x20execution-while-not-rendered=\(\
+SF:),\x20execution-while-out-of-viewport=\(\),\x20fullscreen=\(\),\x20geol
+SF:ocation=\(\),\x20gyroscope=\(\),\x20keyboard-map=\(\),\x20magnetometer=
+SF:\(\),\x20microphone=\(\),\x20midi=\(\),\x20navigation-override=\(\),\x2
+SF:0payment=\(\),\x20picture-in-picture=\(\),\x20screen-wake-lock=\(\),\x2
+SF:0sync-xhr=\(\),\x20usb=\(\),\x20web-share=\(\),\x20xr-spatial-tracking=
+SF:\(\),\x20clipboard-read=\(\),\x20gamepad=\(\),\x20speaker-selection=\(\
+SF:)\r\ncontent-security-policy:\x20worker-src\x20'self';\x20style-src\x20
+SF:'self'\x20'unsafe-inline';")%r(X11Probe,C0,"HTTP/1\.1\x20400\x20Bad\x20
+SF:Request\r\ndate:\x20Sun,\x2025\x20May\x202025\x2015:19:20\x20GMT\r\nser
+SF:ver:\x20uvicorn\r\ncontent-type:\x20text/plain;\x20charset=utf-8\r\ncon
+SF:tent-length:\x2030\r\nconnection:\x20close\r\n\r\nInvalid\x20HTTP\x20re
+SF:quest\x20received\.")%r(FourOhFourRequest,1DA6,"HTTP/1\.1\x20200\x20OK\
+SF:r\ndate:\x20Sun,\x2025\x20May\x202025\x2015:19:20\x20GMT\r\nserver:\x20
+SF:uvicorn\r\ncontent-type:\x20text/html\r\ncontent-length:\x206173\r\ncon
+SF:tent-disposition:\x20inline;\x20filename=\"index\.html\"\r\nlast-modifi
+SF:ed:\x20Thu,\x2017\x20Apr\x202025\x2006:50:35\x20GMT\r\npermissions-poli
+SF:cy:\x20publickey-credentials-get=\(self\),\x20clipboard-write=\(self\),
+SF:\x20accelerometer=\(\),\x20ambient-light-sensor=\(\),\x20autoplay=\(\),
+SF:\x20battery=\(\),\x20camera=\(\),\x20cross-origin-isolated=\(\),\x20dis
+SF:play-capture=\(\),\x20document-domain=\(\),\x20encrypted-media=\(\),\x2
+SF:0execution-while-not-rendered=\(\),\x20execution-while-out-of-viewport=
+SF:\(\),\x20fullscreen=\(\),\x20geolocation=\(\),\x20gyroscope=\(\),\x20ke
+SF:yboard-map=\(\),\x20magnetometer=\(\),\x20microphone=\(\),\x20midi=\(\)
+SF:,\x20navigation-override=\(\),\x20payment=\(\),\x20picture-in-picture=\
+SF:(\),\x20screen-wake-lock=\(\),\x20sync-xhr=\(\),\x20usb=\(\),\x20web-sh
+SF:are=\(\),\x20xr-spatial-tracking=\(\),\x20clipboard-read=\(\),\x20gamep
+SF:ad=\(\),\x20speaker-selection=\(\)\r\ncontent-security-policy:\x20worke
+SF:r-src\x20'self';\x20style-src\x20'self'\x20'unsafe-inline';");
+Device type: general purpose
+Running: Linux 2.6.X
+OS CPE: cpe:/o:linux:linux_kernel:2.6.32
+OS details: Linux 2.6.32
+Network Distance: 0 hops
+
+OS and Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+# Nmap done at Sun May 25 19:19:22 2025 -- 1 IP address (1 host up) scanned in 13.19 seconds

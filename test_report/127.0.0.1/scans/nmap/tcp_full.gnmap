@@ -1,0 +1,4 @@
+# Nmap 7.80 scan initiated Sun May 25 19:19:09 2025 as: nmap -sC -sV -O -A -Pn -oA test_report/127.0.0.1/scans/nmap/tcp_full 127.0.0.1
+Host: 127.0.0.1 (localhost)	Status: Up
+Host: 127.0.0.1 (localhost)	Ports: 5432/open/tcp//postgresql//PostgreSQL DB 9.6.0 or later/, 8000/open/tcp//http-alt//uvicorn/	Ignored State: closed (998)	OS: Linux 2.6.32	Seq Index: 263	IP ID Seq: All zeros
+# Nmap done at Sun May 25 19:19:22 2025 -- 1 IP address (1 host up) scanned in 13.19 seconds

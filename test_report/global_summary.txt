@@ -1,0 +1,11 @@
+WinRecon Global Summary
+==================================================
+
+Scan completed: 2025-05-25 19:19:22.410273
+Total targets scanned: 1
+
+
+Target: 127.0.0.1
+------------------------------
+No open ports detected
+Detailed reports: test_report/127.0.0.1/report/

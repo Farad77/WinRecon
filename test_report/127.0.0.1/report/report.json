@@ -1,0 +1,20 @@
+{
+  "scan_info": {
+    "tool": "WinRecon",
+    "version": "1.0",
+    "scan_date": "2025-05-25T19:19:22.387557",
+    "target": "127.0.0.1",
+    "scan_directory": "test_report/127.0.0.1"
+  },
+  "target_info": {
+    "ip": "127.0.0.1",
+    "hostname": null,
+    "domain": null,
+    "open_ports": [],
+    "services": {}
+  },
+  "findings": {
+    "total_open_ports": 0,
+    "critical_services": []
+  }
+}
