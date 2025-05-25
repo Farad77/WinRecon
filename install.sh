@@ -206,14 +206,120 @@ install_system_packages() {
         # Not critical, we can use pip instead
     fi
     
-    # Install optional tools (don't fail if they can't be installed)
-    log_info "Installing optional system tools..."
-    local tools="nmap smbclient ldap-utils"
-    for tool in $tools; do
+    # Install WinRecon required tools
+    log_info "Installing WinRecon tools..."
+    
+    # Essential tools
+    local essential_tools="nmap smbclient ldap-utils"
+    log_info "Installing essential tools: $essential_tools"
+    for tool in $essential_tools; do
         if ! command -v ${tool%% *} &> /dev/null; then
             run_apt apt-get install -y $tool 2>/dev/null || log_warn "Could not install $tool"
+        else
+            log_info "$tool already installed"
         fi
     done
+    
+    # Additional pentesting tools
+    local pentest_tools="gobuster nikto"
+    log_info "Installing additional pentesting tools..."
+    for tool in $pentest_tools; do
+        if ! command -v $tool &> /dev/null; then
+            run_apt apt-get install -y $tool 2>/dev/null || log_warn "Could not install $tool"
+        else
+            log_info "$tool already installed"
+        fi
+    done
+    
+    # Install enum4linux (from GitHub)
+    if ! command -v enum4linux &> /dev/null; then
+        log_info "Installing enum4linux from GitHub..."
+        if command -v git &> /dev/null && command -v perl &> /dev/null; then
+            if $IS_ROOT; then
+                wget -q "https://raw.githubusercontent.com/CiscoCXSecurity/enum4linux/master/enum4linux.pl" \
+                     -O /usr/local/bin/enum4linux 2>/dev/null && \
+                chmod +x /usr/local/bin/enum4linux && \
+                log_info "enum4linux installed" || log_warn "Could not install enum4linux"
+            elif $HAS_SUDO; then
+                sudo wget -q "https://raw.githubusercontent.com/CiscoCXSecurity/enum4linux/master/enum4linux.pl" \
+                     -O /usr/local/bin/enum4linux 2>/dev/null && \
+                sudo chmod +x /usr/local/bin/enum4linux && \
+                log_info "enum4linux installed" || log_warn "Could not install enum4linux"
+            fi
+        else
+            log_warn "git or perl not found, cannot install enum4linux"
+        fi
+    else
+        log_info "enum4linux already installed"
+    fi
+    
+    # Install CrackMapExec via pipx (recommended method)
+    if ! command -v crackmapexec &> /dev/null && ! command -v cme &> /dev/null; then
+        log_info "Installing CrackMapExec..."
+        
+        # Install pipx first if not available
+        if ! command -v pipx &> /dev/null; then
+            if $IS_ROOT; then
+                apt-get install -y pipx 2>/dev/null || {
+                    $PIP_CMD install pipx 2>/dev/null || log_warn "Could not install pipx"
+                }
+            elif $HAS_SUDO; then
+                sudo apt-get install -y pipx 2>/dev/null || {
+                    $PIP_CMD install --user pipx 2>/dev/null || log_warn "Could not install pipx"
+                }
+            else
+                $PIP_CMD install --user pipx 2>/dev/null || log_warn "Could not install pipx"
+            fi
+        fi
+        
+        # Install CrackMapExec using pipx
+        if command -v pipx &> /dev/null; then
+            if $IS_ROOT; then
+                pipx install crackmapexec 2>/dev/null && \
+                log_info "CrackMapExec installed" || log_warn "Could not install CrackMapExec"
+            else
+                pipx install crackmapexec 2>/dev/null && \
+                log_info "CrackMapExec installed" || log_warn "Could not install CrackMapExec"
+                # Add pipx bin to PATH reminder
+                if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+                    log_info "Remember to add ~/.local/bin to your PATH for pipx tools"
+                fi
+            fi
+        fi
+    else
+        log_info "CrackMapExec already installed"
+    fi
+    
+    # Impacket tools
+    if ! command -v impacket-secretsdump &> /dev/null; then
+        log_info "Installing Impacket suite..."
+        run_apt apt-get install -y python3-impacket 2>/dev/null || log_warn "Could not install python3-impacket"
+    else
+        log_info "Impacket already installed"
+    fi
+    
+    # Kerbrute (download from GitHub)
+    if ! command -v kerbrute &> /dev/null && ! [ -f /usr/local/bin/kerbrute ]; then
+        log_info "Installing Kerbrute..."
+        local kerbrute_url="https://github.com/ropnop/kerbrute/releases/latest/download/kerbrute_linux_amd64"
+        if command -v wget &> /dev/null; then
+            if $IS_ROOT; then
+                wget -q "$kerbrute_url" -O /usr/local/bin/kerbrute 2>/dev/null && \
+                chmod +x /usr/local/bin/kerbrute && \
+                log_info "Kerbrute installed" || log_warn "Could not install Kerbrute"
+            elif $HAS_SUDO; then
+                sudo wget -q "$kerbrute_url" -O /usr/local/bin/kerbrute 2>/dev/null && \
+                sudo chmod +x /usr/local/bin/kerbrute && \
+                log_info "Kerbrute installed" || log_warn "Could not install Kerbrute"
+            else
+                log_warn "Need sudo to install Kerbrute"
+            fi
+        else
+            log_warn "wget not found, cannot download Kerbrute"
+        fi
+    else
+        log_info "Kerbrute already installed"
+    fi
 }
 
 install_python_packages() {
@@ -279,6 +385,50 @@ install_python_packages() {
     fi
     
     return 0
+}
+
+install_additional_tools() {
+    if ! $USE_SYSTEM_INSTALL; then
+        log_info "Skipping additional tools installation (user install)"
+        return 0
+    fi
+    
+    log_info "Installing additional tools from GitHub..."
+    
+    # WindapSearch
+    if [ ! -d "/opt/windapsearch" ]; then
+        log_info "Installing WindapSearch..."
+        if command -v git &> /dev/null; then
+            if $IS_ROOT; then
+                git clone https://github.com/ropnop/windapsearch.git /opt/windapsearch 2>/dev/null || log_warn "Could not install WindapSearch"
+            elif $HAS_SUDO; then
+                sudo git clone https://github.com/ropnop/windapsearch.git /opt/windapsearch 2>/dev/null || log_warn "Could not install WindapSearch"
+            fi
+        else
+            log_warn "git not found, cannot install WindapSearch"
+        fi
+    else
+        log_info "WindapSearch already installed"
+    fi
+    
+    # BloodHound Python
+    log_info "Installing BloodHound Python ingestor..."
+    local bloodhound_installed=false
+    if $PYTHON_CMD -c "import bloodhound" 2>/dev/null; then
+        bloodhound_installed=true
+    fi
+    
+    if ! $bloodhound_installed; then
+        if $IS_ROOT; then
+            $PIP_CMD install bloodhound 2>/dev/null || log_warn "Could not install BloodHound Python"
+        elif $HAS_SUDO; then
+            sudo $PIP_CMD install bloodhound 2>/dev/null || log_warn "Could not install BloodHound Python"
+        else
+            $PIP_CMD install --user bloodhound 2>/dev/null || log_warn "Could not install BloodHound Python"
+        fi
+    else
+        log_info "BloodHound Python already installed"
+    fi
 }
 
 install_winrecon_files() {
@@ -387,29 +537,82 @@ check_installation() {
         log_warn "PyYAML import: FAILED"
     fi
     
-    # Check for system tools
-    log_info "Checking system tools..."
-    local tools=(nmap smbclient ldapsearch)
-    local missing_tools=()
+    # Check for all WinRecon tools
+    log_info "Checking WinRecon tools..."
     
-    for tool in "${tools[@]}"; do
+    # Define all tools to check
+    local essential_tools=(nmap smbclient ldapsearch)
+    local pentest_tools=(enum4linux crackmapexec gobuster nikto impacket-secretsdump kerbrute)
+    local optional_tools=(windapsearch bloodhound)
+    local all_tools=("${essential_tools[@]}" "${pentest_tools[@]}")
+    
+    local missing_essential=()
+    local missing_pentest=()
+    local found_tools=()
+    
+    # Check essential tools
+    echo ""
+    log_info "Essential tools:"
+    for tool in "${essential_tools[@]}"; do
         if command -v "$tool" &> /dev/null; then
-            log_info "$tool: Found"
+            echo "  ✓ $tool"
+            found_tools+=("$tool")
         else
-            log_warn "$tool: Not found"
-            missing_tools+=("$tool")
+            echo "  ✗ $tool"
+            missing_essential+=("$tool")
         fi
     done
     
-    if [ ${#missing_tools[@]} -gt 0 ]; then
-        echo ""
-        log_warn "Some system tools are missing: ${missing_tools[*]}"
-        log_info "WinRecon will work but with limited functionality."
-        log_info "To install missing tools later, run:"
-        if $USE_SYSTEM_INSTALL; then
-            echo "    sudo apt-get install ${missing_tools[*]}"
+    # Check pentesting tools
+    echo ""
+    log_info "Pentesting tools:"
+    for tool in "${pentest_tools[@]}"; do
+        if command -v "$tool" &> /dev/null || [ -f "/usr/local/bin/$tool" ]; then
+            echo "  ✓ $tool"
+            found_tools+=("$tool")
         else
-            echo "    Ask your system administrator to install: ${missing_tools[*]}"
+            echo "  ✗ $tool"
+            missing_pentest+=("$tool")
+        fi
+    done
+    
+    # Check optional tools
+    echo ""
+    log_info "Optional tools:"
+    if [ -d "/opt/windapsearch" ]; then
+        echo "  ✓ windapsearch"
+    else
+        echo "  ✗ windapsearch"
+    fi
+    
+    if $PYTHON_CMD -c "import bloodhound" 2>/dev/null; then
+        echo "  ✓ bloodhound (Python)"
+    else
+        echo "  ✗ bloodhound (Python)"
+    fi
+    
+    # Summary
+    echo ""
+    if [ ${#missing_essential[@]} -gt 0 ]; then
+        log_warn "Missing essential tools: ${missing_essential[*]}"
+        log_info "These tools are required for basic functionality."
+    fi
+    
+    if [ ${#missing_pentest[@]} -gt 0 ]; then
+        log_warn "Missing pentesting tools: ${missing_pentest[*]}"
+        log_info "WinRecon will work but with reduced capabilities."
+    fi
+    
+    if [ ${#missing_essential[@]} -eq 0 ] && [ ${#missing_pentest[@]} -eq 0 ]; then
+        echo ""
+        log_info "All WinRecon tools are installed!"
+    else
+        echo ""
+        log_info "To install missing tools later:"
+        if $USE_SYSTEM_INSTALL; then
+            echo "    sudo ./install.sh"
+        else
+            echo "    Ask your administrator to run: sudo ./install.sh"
         fi
     fi
 }
@@ -453,6 +656,9 @@ main() {
     
     # Install Python packages
     install_python_packages
+    
+    # Install additional tools from various sources
+    install_additional_tools
     
     # Install WinRecon files
     install_winrecon_files

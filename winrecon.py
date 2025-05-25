@@ -267,10 +267,13 @@ class WinReconScanner:
         
         return target_dir
 
-    async def run_command(self, command: str, output_file: Optional[Path] = None) -> tuple:
+    async def run_command(self, command: str, output_file: Optional[Path] = None, timeout: Optional[int] = None) -> tuple:
         """Exécute une commande de manière asynchrone"""
         try:
             self.logger.debug(f"Executing: {command}")
+            
+            # Use custom timeout if provided, otherwise use default
+            cmd_timeout = timeout if timeout else self.config['timeout']
             
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -280,7 +283,7 @@ class WinReconScanner:
             
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(), 
-                timeout=self.config['timeout']
+                timeout=cmd_timeout
             )
             
             result = {
@@ -307,17 +310,31 @@ class WinReconScanner:
         """Scan Nmap initial pour découvrir les services"""
         self.logger.info(f"Starting Nmap scan for {target.ip}")
         
-        # Scan TCP complet
+        # Commands for parallel execution
         tcp_command = (f"{self.config['tools']['nmap']} -sC -sV -O -A -Pn "
                       f"-oA {target_dir}/scans/nmap/tcp_full {target.ip}")
         
-        tcp_result = await self.run_command(tcp_command)
+        # UDP scan with reduced timeout and limited ports
+        udp_timeout = self.config.get('udp_timeout', 300)  # 5 minutes default
+        udp_command = (f"{self.config['tools']['nmap']} -sU --top-ports 20 "
+                      f"--max-retries 1 --version-intensity 0 "
+                      f"-oA {target_dir}/scans/nmap/udp_top20 {target.ip}")
         
-        # Scan UDP des ports principaux
-        udp_command = (f"{self.config['tools']['nmap']} -sU -sV --top-ports 1000 "
-                      f"-oA {target_dir}/scans/nmap/udp_top1000 {target.ip}")
+        # Run TCP and UDP scans in parallel
+        self.logger.info(f"Running TCP and UDP scans in parallel for {target.ip}")
+        tcp_task = asyncio.create_task(self.run_command(tcp_command))
+        udp_task = asyncio.create_task(self.run_command(udp_command, timeout=udp_timeout))
         
-        udp_result = await self.run_command(udp_command)
+        # Wait for both scans to complete
+        tcp_result, udp_result = await asyncio.gather(tcp_task, udp_task, return_exceptions=True)
+        
+        # Handle results
+        if isinstance(tcp_result, Exception):
+            self.logger.error(f"TCP scan failed: {tcp_result}")
+            tcp_result = {'error': str(tcp_result)}
+        if isinstance(udp_result, Exception):
+            self.logger.error(f"UDP scan failed: {udp_result}")
+            udp_result = {'error': str(udp_result)}
         
         # Parser les résultats pour extraire les ports ouverts
         self.parse_nmap_results(target, tcp_result, udp_result)
@@ -550,13 +567,57 @@ class WinReconScanner:
         await self.generate_report(target, target_dir)
 
     async def generate_report(self, target: Target, target_dir: Path):
-        """Génère un rapport de synthèse"""
+        """Génère des rapports complets"""
+        self.logger.info(f"Generating reports for {target.ip}")
+        
+        try:
+            # Import report generator dynamically
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "winrecon_report", 
+                Path(__file__).parent / "winrecon-report.py"
+            )
+            if spec and spec.loader:
+                winrecon_report = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(winrecon_report)
+                
+                # Create report generator instance
+                report_gen = winrecon_report.ReportGenerator(str(target_dir))
+                
+                # Generate all report formats based on config
+                if self.config.get('reporting', {}).get('generate_html', True):
+                    self.logger.info("Generating HTML report...")
+                    report_gen.generate_html_report()
+                
+                if self.config.get('reporting', {}).get('generate_json', True):
+                    self.logger.info("Generating JSON report...")
+                    report_gen.generate_json_report()
+                
+                if self.config.get('reporting', {}).get('generate_csv', True):
+                    self.logger.info("Generating CSV report...")
+                    report_gen.generate_csv_reports()
+                
+                self.logger.info(f"Reports generated successfully for {target.ip}")
+                print(f"\n[*] Reports generated in: {target_dir}/report/")
+                print(f"    - HTML Report: {target_dir}/report/report.html")
+                print(f"    - JSON Report: {target_dir}/report/report.json")
+                print(f"    - CSV Reports: {target_dir}/report/*.csv")
+            else:
+                raise ImportError("Could not load report generator module")
+                
+        except Exception as e:
+            self.logger.error(f"Report generation failed: {e}")
+            # Fallback to simple text report
+            await self.generate_simple_report(target, target_dir)
+    
+    async def generate_simple_report(self, target: Target, target_dir: Path):
+        """Génère un rapport texte simple en cas d'erreur"""
         report_file = target_dir / 'report' / 'summary.txt'
         
         with open(report_file, 'w') as f:
             f.write(f"WinRecon Report for {target.ip}\n")
             f.write("=" * 50 + "\n\n")
-            f.write(f"Scan started: {datetime.now()}\n")
+            f.write(f"Scan completed: {datetime.now()}\n")
             f.write(f"Target: {target.ip}\n")
             if target.hostname:
                 f.write(f"Hostname: {target.hostname}\n")
@@ -564,20 +625,48 @@ class WinReconScanner:
                 f.write(f"Domain: {target.domain}\n")
             f.write(f"Open ports: {', '.join(map(str, target.open_ports))}\n\n")
             
-            # Analyse des services
+            # Service analysis
             f.write("Services Analysis:\n")
             f.write("-" * 20 + "\n")
             
             if 445 in target.open_ports or 139 in target.open_ports:
-                f.write("✓ SMB service detected - Check scans/smb/ for enumeration results\n")
+                f.write("✓ SMB service detected\n")
             if 389 in target.open_ports or 636 in target.open_ports:
-                f.write("✓ LDAP service detected - Check scans/ldap/ for AD enumeration\n")
+                f.write("✓ LDAP service detected\n")
             if 88 in target.open_ports:
-                f.write("✓ Kerberos service detected - Check scans/kerberos/ for ticket attacks\n")
+                f.write("✓ Kerberos service detected\n")
             
             web_ports = [80, 443, 8080, 8443, 5985, 5986]
             if any(port in target.open_ports for port in web_ports):
-                f.write("✓ Web services detected - Check scans/web/ for web enumeration\n")
+                f.write("✓ Web services detected\n")
+    
+    async def generate_global_report(self):
+        """Génère un rapport global pour toutes les cibles"""
+        try:
+            global_report = self.results_dir / "global_summary.txt"
+            with open(global_report, 'w') as f:
+                f.write("WinRecon Global Summary\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(f"Scan completed: {datetime.now()}\n")
+                f.write(f"Total targets scanned: {len(self.targets)}\n\n")
+                
+                for target in self.targets:
+                    f.write(f"\nTarget: {target.ip}\n")
+                    f.write("-" * 30 + "\n")
+                    if target.hostname:
+                        f.write(f"Hostname: {target.hostname}\n")
+                    if target.open_ports:
+                        f.write(f"Open ports: {', '.join(map(str, sorted(target.open_ports)))}\n")
+                    else:
+                        f.write("No open ports detected\n")
+                    
+                    # Link to detailed report
+                    target_dir = self.results_dir / target.ip
+                    f.write(f"Detailed reports: {target_dir}/report/\n")
+            
+            self.logger.info(f"Global summary saved to: {global_report}")
+        except Exception as e:
+            self.logger.error(f"Failed to generate global report: {e}")
 
     async def run(self, targets: List[str]):
         """Point d'entrée principal"""
@@ -596,12 +685,24 @@ class WinReconScanner:
             async with semaphore:
                 await self.scan_target(target)
         
-        await asyncio.gather(
+        # Track scan results
+        scan_results = await asyncio.gather(
             *[scan_with_semaphore(target) for target in self.targets],
             return_exceptions=True
         )
         
+        # Generate global summary report
+        await self.generate_global_report()
+        
         self.logger.info("WinRecon completed")
+        print("\n" + "="*60)
+        print("SCAN COMPLETED")
+        print("="*60)
+        print(f"Results saved in: {self.results_dir}")
+        print(f"\nTarget summaries:")
+        for target in self.targets:
+            target_dir = self.results_dir / target.ip
+            print(f"  - {target.ip}: {target_dir}/report/")
 
 def parse_targets(target_input: str) -> List[str]:
     """Parse les cibles d'entrée (IP, CIDR, fichier)"""

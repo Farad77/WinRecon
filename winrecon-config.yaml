@@ -5,6 +5,7 @@
 output_dir: "winrecon_results"
 max_concurrent_scans: 10
 timeout: 3600  # Timeout en secondes pour chaque commande
+udp_timeout: 300  # Timeout réduit pour les scans UDP (5 minutes)
 verbose: false
 
 # Informations de domaine par défaut
@@ -19,14 +20,14 @@ tools:
   nmap: "/usr/bin/nmap"
   ldapsearch: "/usr/bin/ldapsearch"
   smbclient: "/usr/bin/smbclient"
-  enum4linux: "/usr/bin/enum4linux"
+  enum4linux: "/usr/local/bin/enum4linux"
   windapsearch: "python3 /opt/windapsearch/windapsearch.py"
-  bloodhound: "python3 /opt/BloodHound.py/bloodhound.py"
-  crackmapexec: "/usr/bin/crackmapexec"
-  impacket-secretsdump: "/usr/bin/impacket-secretsdump"
-  impacket-GetNPUsers: "/usr/bin/impacket-GetNPUsers"
-  impacket-GetUserSPNs: "/usr/bin/impacket-GetUserSPNs"
-  kerbrute: "/opt/kerbrute/kerbrute"
+  bloodhound: "bloodhound-python"
+  crackmapexec: "crackmapexec"
+  impacket-secretsdump: "impacket-secretsdump"
+  impacket-GetNPUsers: "impacket-GetNPUsers"
+  impacket-GetUserSPNs: "impacket-GetUserSPNs"
+  kerbrute: "/usr/local/bin/kerbrute"
   gobuster: "/usr/bin/gobuster"
   nikto: "/usr/bin/nikto"
   adidnsdump: "python3 /opt/adidnsdump/adidnsdump.py"
