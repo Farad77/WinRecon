@@ -1,0 +1,29 @@
+2025-05-26 06:55:13,860 - INFO - Auto-detecting tool paths...
+2025-05-26 06:55:14,633 - INFO - Auto-detected 7 tool paths
+2025-05-26 06:55:15,142 - WARNING - Missing tools detected: enum4linux, crackmapexec, netexec, impacket-GetNPUsers, impacket-GetUserSPNs, responder, mitm6, sharphound
+2025-05-26 06:56:30,716 - INFO - Auto-detecting tool paths...
+2025-05-26 06:56:30,952 - DEBUG - Updated impacket-secretsdump: impacket-secretsdump
+2025-05-26 06:56:31,279 - DEBUG - Updated bloodhound: bloodhound-python
+2025-05-26 06:56:31,325 - DEBUG - Updated kerbrute: kerbrute
+2025-05-26 06:56:31,326 - DEBUG - Updated nmap: nmap
+2025-05-26 06:56:31,326 - DEBUG - Updated smbclient: smbclient
+2025-05-26 06:56:31,326 - DEBUG - Updated ldapsearch: ldapsearch
+2025-05-26 06:56:31,326 - DEBUG - Updated gobuster: gobuster
+2025-05-26 06:56:31,327 - DEBUG - Updated nikto: nikto
+2025-05-26 06:56:31,327 - INFO - Auto-detected 8 tool paths
+2025-05-26 06:56:31,327 - DEBUG -   impacket-secretsdump: impacket-secretsdump
+2025-05-26 06:56:31,327 - DEBUG -   bloodhound: bloodhound-python
+2025-05-26 06:56:31,327 - DEBUG -   kerbrute: kerbrute
+2025-05-26 06:56:31,327 - DEBUG -   nmap: nmap
+2025-05-26 06:56:31,328 - DEBUG -   smbclient: smbclient
+2025-05-26 06:56:31,328 - DEBUG -   ldapsearch: ldapsearch
+2025-05-26 06:56:31,328 - DEBUG -   gobuster: gobuster
+2025-05-26 06:56:31,328 - DEBUG -   nikto: nikto
+2025-05-26 06:56:31,810 - WARNING - Missing tools detected: enum4linux, crackmapexec, impacket-GetNPUsers, impacket-GetUserSPNs
+2025-05-26 06:56:31,811 - DEBUG - Using selector: EpollSelector
+2025-05-26 06:56:31,812 - INFO - Starting WinRecon
+2025-05-26 06:56:31,813 - INFO - Starting comprehensive scan of 127.0.0.1
+2025-05-26 06:56:31,833 - INFO - Starting Nmap scan for 127.0.0.1
+2025-05-26 06:56:31,833 - INFO - Running TCP and UDP scans in parallel for 127.0.0.1
+2025-05-26 06:56:31,833 - DEBUG - Executing: nmap -sC -sV -O -A -Pn -oA winrecon_results/127.0.0.1/scans/nmap/tcp_full 127.0.0.1
+2025-05-26 06:56:31,834 - DEBUG - Executing: nmap -sU --top-ports 20 --max-retries 1 --version-intensity 0 -oA winrecon_results/127.0.0.1/scans/nmap/udp_top20 127.0.0.1

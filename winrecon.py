@@ -721,90 +721,39 @@ class WinReconScanner:
         """Génère des rapports complets"""
         self.logger.info(f"Generating reports for {target.ip}")
         
+        # Use only the simple report generator to avoid import issues
         try:
-            # Try to use the simple report generator first
-            try:
-                from simple_report import SimpleReportGenerator
-                report_gen = SimpleReportGenerator(self.config, self.logger)
-                
-                # Prepare results data
-                results = {
-                    'target': target.ip,
-                    'hostname': target.hostname,
-                    'domain': target.domain,
-                    'open_ports': list(target.open_ports) if target.open_ports else [],
-                    'services': target.services if hasattr(target, 'services') else {},
-                    'scan_dir': str(target_dir)
-                }
-                
-                # Generate reports
-                report_gen.generate_reports(results, target_dir)
-                
+            # Import and use simple report generator
+            from simple_report import SimpleReportGenerator
+            report_gen = SimpleReportGenerator(self.config, self.logger)
+            
+            # Prepare results data
+            results = {
+                'target': target.ip,
+                'hostname': target.hostname,
+                'domain': target.domain,
+                'open_ports': list(target.open_ports) if target.open_ports else [],
+                'services': target.services if hasattr(target, 'services') else {},
+                'scan_dir': str(target_dir)
+            }
+            
+            # Generate reports
+            success = report_gen.generate_reports(results, target_dir)
+            
+            if success:
                 self.logger.info(f"Reports generated successfully for {target.ip}")
                 print(f"\n[*] Reports generated in: {target_dir}/report/")
                 print(f"    - HTML Report: {target_dir}/report/report.html")
                 print(f"    - JSON Report: {target_dir}/report/report.json")
                 print(f"    - Text Summary: {target_dir}/report/summary.txt")
                 return
-                
-            except ImportError:
-                self.logger.debug("Simple report generator not available, trying advanced generator...")
-            
-            # Fallback to advanced report generator
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "winrecon_report", 
-                Path(__file__).parent / "winrecon-report.py"
-            )
-            if spec and spec.loader:
-                winrecon_report = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(winrecon_report)
-                
-                # Create report generator instance
-                if hasattr(winrecon_report, 'WinReconReportGenerator'):
-                    report_gen = winrecon_report.WinReconReportGenerator(
-                        self.config, 
-                        self.logger
-                    )
-                    
-                    # Prepare results data
-                    results = {
-                        'target': target.ip,
-                        'hostname': target.hostname,
-                        'domain': target.domain,
-                        'open_ports': list(target.open_ports) if target.open_ports else [],
-                        'services': target.services if hasattr(target, 'services') else {},
-                        'scan_dir': str(target_dir)
-                    }
-                    
-                    # Generate reports
-                    if self.config.get('reporting', {}).get('generate_html', True):
-                        self.logger.info("Generating HTML report...")
-                        report_gen.generate_html_report(
-                            results, 
-                            target_dir / 'report' / 'report.html'
-                        )
-                    
-                    if self.config.get('reporting', {}).get('generate_json', True):
-                        self.logger.info("Generating JSON report...")
-                        json_file = target_dir / 'report' / 'report.json'
-                        with open(json_file, 'w') as f:
-                            json.dump(results, f, indent=2)
-                    
-                    self.logger.info(f"Reports generated successfully for {target.ip}")
-                    print(f"\n[*] Reports generated in: {target_dir}/report/")
-                else:
-                    # Debug what's available
-                    available_attrs = [attr for attr in dir(winrecon_report) if not attr.startswith('_')]
-                    self.logger.error(f"WinReconReportGenerator not found. Available: {available_attrs}")
-                    raise ImportError("WinReconReportGenerator not found in module")
-                # Already handled above
             else:
-                raise ImportError("Could not load report generator module")
+                raise Exception("Simple report generation failed")
                 
         except Exception as e:
             self.logger.error(f"Report generation failed: {e}")
-            # Fallback to simple text report
+            self.logger.info("Falling back to basic text report...")
+            # Fallback to basic text report
             await self.generate_simple_report(target, target_dir)
     
     async def generate_simple_report(self, target: Target, target_dir: Path):
