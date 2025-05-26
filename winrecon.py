@@ -519,9 +519,69 @@ class WinReconScanner:
 
     def parse_nmap_results(self, target: Target, tcp_result: Dict, udp_result: Dict):
         """Parse les résultats Nmap pour extraire les informations"""
-        # Implémentation simplifiée - dans la vraie vie, on utiliserait python-nmap
-        # ou on parserait le XML généré par nmap
-        pass
+        import re
+        
+        # Parse TCP results
+        if tcp_result and 'stdout' in tcp_result:
+            tcp_output = tcp_result['stdout']
+            self.logger.debug(f"Parsing TCP nmap output for {target.ip}")
+            
+            # Extract open TCP ports using regex
+            tcp_port_pattern = r'(\d+)/tcp\s+open'
+            tcp_matches = re.findall(tcp_port_pattern, tcp_output)
+            
+            for port_str in tcp_matches:
+                port = int(port_str)
+                target.open_ports.append(port)
+                self.logger.debug(f"Found open TCP port: {port}")
+            
+            # Extract service information
+            service_pattern = r'(\d+)/tcp\s+open\s+(\S+)'
+            service_matches = re.findall(service_pattern, tcp_output)
+            
+            for port_str, service in service_matches:
+                port = int(port_str)
+                target.services[port] = service
+                self.logger.debug(f"Service on port {port}: {service}")
+            
+            # Extract hostname if available
+            hostname_pattern = r'Nmap scan report for (\S+) \('
+            hostname_match = re.search(hostname_pattern, tcp_output)
+            if hostname_match and hostname_match.group(1) != target.ip:
+                target.hostname = hostname_match.group(1)
+                self.logger.debug(f"Found hostname: {target.hostname}")
+        
+        # Parse UDP results
+        if udp_result and 'stdout' in udp_result:
+            udp_output = udp_result['stdout']
+            self.logger.debug(f"Parsing UDP nmap output for {target.ip}")
+            
+            # Extract open UDP ports
+            udp_port_pattern = r'(\d+)/udp\s+open'
+            udp_matches = re.findall(udp_port_pattern, udp_output)
+            
+            for port_str in udp_matches:
+                port = int(port_str)
+                if port not in target.open_ports:
+                    target.open_ports.append(port)
+                    self.logger.debug(f"Found open UDP port: {port}")
+            
+            # Extract UDP service information
+            udp_service_pattern = r'(\d+)/udp\s+open\s+(\S+)'
+            udp_service_matches = re.findall(udp_service_pattern, udp_output)
+            
+            for port_str, service in udp_service_matches:
+                port = int(port_str)
+                if port not in target.services:
+                    target.services[port] = f"{service} (UDP)"
+                else:
+                    target.services[port] += f" / {service} (UDP)"
+                self.logger.debug(f"UDP service on port {port}: {service}")
+        
+        # Sort ports for consistent output
+        target.open_ports.sort()
+        
+        self.logger.info(f"Found {len(target.open_ports)} open ports on {target.ip}: {target.open_ports}")
 
     async def smb_enumeration(self, target: Target, target_dir: Path):
         """Énumération SMB complète"""
