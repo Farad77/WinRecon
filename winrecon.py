@@ -724,6 +724,10 @@ class WinReconScanner:
         # Use only the simple report generator to avoid import issues
         try:
             # Import and use simple report generator
+            import sys
+            import os
+            # Add current directory to Python path to ensure module can be found
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from simple_report import SimpleReportGenerator
             report_gen = SimpleReportGenerator(self.config, self.logger)
             
