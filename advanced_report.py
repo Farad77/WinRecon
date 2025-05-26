@@ -59,6 +59,9 @@ class AdvancedReportGenerator:
         # Check for extracted credentials
         self.analyze_loot(target_dir / 'loot')
         
+        # Analyze BloodHound data
+        self.analyze_bloodhound_data(target_dir / 'loot' / 'bloodhound')
+        
     def analyze_nmap_outputs(self, nmap_dir: Path):
         """Analyze nmap output files for vulnerabilities"""
         if not nmap_dir.exists():
@@ -319,6 +322,215 @@ class AdvancedReportGenerator:
                         
         self.findings['loot'] = findings
         
+    def analyze_bloodhound_data(self, bloodhound_dir: Path):
+        """Analyze BloodHound JSON outputs for attack paths and findings"""
+        if not bloodhound_dir.exists():
+            return
+            
+        # Check for BloodHound ZIP file first
+        import zipfile
+        import tempfile
+        
+        zip_files = list(bloodhound_dir.glob('*.zip'))
+        if zip_files:
+            # Extract the most recent ZIP file
+            latest_zip = max(zip_files, key=lambda x: x.stat().st_mtime)
+            self.logger.info(f"Extracting BloodHound data from {latest_zip}")
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                with zipfile.ZipFile(latest_zip, 'r') as zip_ref:
+                    zip_ref.extractall(temp_dir)
+                
+                # Process extracted JSON files
+                temp_path = Path(temp_dir)
+                return self._analyze_bloodhound_json_files(temp_path)
+        else:
+            # Look for JSON files directly
+            return self._analyze_bloodhound_json_files(bloodhound_dir)
+    
+    def _analyze_bloodhound_json_files(self, json_dir: Path):
+        """Analyze BloodHound JSON files from a directory"""
+        findings = {
+            'users': [],
+            'computers': [],
+            'groups': [],
+            'domains': [],
+            'high_value_targets': [],
+            'admin_users': [],
+            'kerberoastable_users': [],
+            'asreproastable_users': [],
+            'unconstrained_delegation': [],
+            'constrained_delegation': [],
+            'critical_paths': [],
+            'statistics': {}
+        }
+        
+        try:
+            # Find JSON files (they might have timestamps in names)
+            json_files = list(json_dir.glob('*_users.json')) + list(json_dir.glob('users.json'))
+            if not json_files:
+                json_files = list(json_dir.glob('*users*.json'))
+            
+            # Parse user data
+            for users_file in json_files:
+                if not users_file.exists():
+                    continue
+                with open(users_file, 'r', encoding='utf-8') as f:
+                    users_data = json.load(f)
+                    
+                for user in users_data.get('users', []):
+                    user_info = {
+                        'name': user.get('Properties', {}).get('name'),
+                        'domain': user.get('Properties', {}).get('domain'),
+                        'enabled': user.get('Properties', {}).get('enabled', False),
+                        'admin_count': user.get('Properties', {}).get('admincount', 0),
+                        'pwdneverexpires': user.get('Properties', {}).get('pwdneverexpires', False),
+                        'highvalue': user.get('Properties', {}).get('highvalue', False),
+                        'hasspn': user.get('Properties', {}).get('hasspn', False),
+                        'dontreqpreauth': user.get('Properties', {}).get('dontreqpreauth', False)
+                    }
+                    
+                    findings['users'].append(user_info)
+                    
+                    # Identify high-value targets
+                    if user_info['highvalue']:
+                        findings['high_value_targets'].append(user_info['name'])
+                        
+                    # Identify admin users
+                    if user_info['admin_count'] > 0:
+                        findings['admin_users'].append(user_info['name'])
+                        
+                    # Identify Kerberoastable users
+                    if user_info['hasspn'] and user_info['enabled']:
+                        findings['kerberoastable_users'].append(user_info['name'])
+                        
+                    # Identify ASREPRoastable users
+                    if user_info['dontreqpreauth'] and user_info['enabled']:
+                        findings['asreproastable_users'].append(user_info['name'])
+                        
+            # Parse computer data
+            computer_files = list(json_dir.glob('*_computers.json')) + list(json_dir.glob('computers.json'))
+            if not computer_files:
+                computer_files = list(json_dir.glob('*computers*.json'))
+            
+            for computers_file in computer_files:
+                if not computers_file.exists():
+                    continue
+                with open(computers_file, 'r', encoding='utf-8') as f:
+                    computers_data = json.load(f)
+                    
+                for computer in computers_data.get('computers', []):
+                    comp_info = {
+                        'name': computer.get('Properties', {}).get('name'),
+                        'domain': computer.get('Properties', {}).get('domain'),
+                        'enabled': computer.get('Properties', {}).get('enabled', False),
+                        'highvalue': computer.get('Properties', {}).get('highvalue', False),
+                        'unconstraineddelegation': computer.get('Properties', {}).get('unconstraineddelegation', False),
+                        'trustedtoauth': computer.get('Properties', {}).get('trustedtoauth', False),
+                        'operatingsystem': computer.get('Properties', {}).get('operatingsystem', 'Unknown')
+                    }
+                    
+                    findings['computers'].append(comp_info)
+                    
+                    # Identify unconstrained delegation
+                    if comp_info['unconstraineddelegation']:
+                        findings['unconstrained_delegation'].append(comp_info['name'])
+                        self.vulnerabilities.append({
+                            'type': 'Unconstrained Delegation',
+                            'severity': 'High',
+                            'description': f'Computer {comp_info["name"]} has unconstrained delegation enabled',
+                            'recommendation': 'Disable unconstrained delegation or use resource-based constrained delegation'
+                        })
+                        
+                    # Identify constrained delegation
+                    if comp_info['trustedtoauth']:
+                        findings['constrained_delegation'].append(comp_info['name'])
+                        
+            # Parse group data
+            group_files = list(json_dir.glob('*_groups.json')) + list(json_dir.glob('groups.json'))
+            if not group_files:
+                group_files = list(json_dir.glob('*groups*.json'))
+                
+            for groups_file in group_files:
+                if not groups_file.exists():
+                    continue
+                with open(groups_file, 'r', encoding='utf-8') as f:
+                    groups_data = json.load(f)
+                    
+                for group in groups_data.get('groups', []):
+                    group_info = {
+                        'name': group.get('Properties', {}).get('name'),
+                        'domain': group.get('Properties', {}).get('domain'),
+                        'highvalue': group.get('Properties', {}).get('highvalue', False),
+                        'admincount': group.get('Properties', {}).get('admincount', 0)
+                    }
+                    findings['groups'].append(group_info)
+                    
+            # Parse domain data
+            domain_files = list(json_dir.glob('*_domains.json')) + list(json_dir.glob('domains.json'))
+            if not domain_files:
+                domain_files = list(json_dir.glob('*domains*.json'))
+                
+            for domains_file in domain_files:
+                if not domains_file.exists():
+                    continue
+                with open(domains_file, 'r', encoding='utf-8') as f:
+                    domains_data = json.load(f)
+                    
+                for domain in domains_data.get('domains', []):
+                    domain_info = {
+                        'name': domain.get('Properties', {}).get('name'),
+                        'functionallevel': domain.get('Properties', {}).get('functionallevel'),
+                        'trusts': len(domain.get('Trusts', []))
+                    }
+                    findings['domains'].append(domain_info)
+                    
+            # Calculate statistics
+            findings['statistics'] = {
+                'total_users': len(findings['users']),
+                'enabled_users': len([u for u in findings['users'] if u['enabled']]),
+                'admin_users': len(findings['admin_users']),
+                'kerberoastable': len(findings['kerberoastable_users']),
+                'asreproastable': len(findings['asreproastable_users']),
+                'total_computers': len(findings['computers']),
+                'enabled_computers': len([c for c in findings['computers'] if c['enabled']]),
+                'unconstrained_delegation': len(findings['unconstrained_delegation']),
+                'total_groups': len(findings['groups']),
+                'high_value_groups': len([g for g in findings['groups'] if g['highvalue']])
+            }
+            
+            # Generate vulnerability findings based on statistics
+            if findings['kerberoastable_users']:
+                self.vulnerabilities.append({
+                    'type': 'Kerberoastable Service Accounts',
+                    'severity': 'High',
+                    'description': f'Found {len(findings["kerberoastable_users"])} Kerberoastable user accounts with SPNs',
+                    'recommendation': 'Ensure all service accounts use strong, unique passwords (25+ characters)'
+                })
+                
+            if findings['asreproastable_users']:
+                self.vulnerabilities.append({
+                    'type': 'ASREPRoastable Accounts',
+                    'severity': 'High',
+                    'description': f'Found {len(findings["asreproastable_users"])} accounts without Kerberos pre-authentication',
+                    'recommendation': 'Enable Kerberos pre-authentication for all user accounts'
+                })
+                
+            # Check for common misconfigurations
+            pwd_never_expires = [u for u in findings['users'] if u['pwdneverexpires'] and u['enabled']]
+            if pwd_never_expires:
+                self.vulnerabilities.append({
+                    'type': 'Password Never Expires',
+                    'severity': 'Medium',
+                    'description': f'{len(pwd_never_expires)} enabled accounts have passwords that never expire',
+                    'recommendation': 'Implement password expiration policy for all accounts'
+                })
+                
+        except Exception as e:
+            self.logger.error(f"Error parsing BloodHound data: {e}")
+            
+        self.findings['bloodhound'] = findings
+        
     def read_file_safe(self, file_path: Path) -> str:
         """Safely read file content"""
         try:
@@ -509,6 +721,82 @@ class AdvancedReportGenerator:
             
             html_content += """
             </div>"""
+            
+        # Add BloodHound findings
+        bloodhound_findings = self.findings.get('bloodhound', {})
+        if bloodhound_findings and bloodhound_findings.get('statistics'):
+            stats = bloodhound_findings['statistics']
+            html_content += f"""
+            <div class="section">
+                <h2>🩸 BloodHound Analysis</h2>
+                <div class="info-grid">
+                    <div class="info-box">
+                        <h3>👥 User Statistics</h3>
+                        <p><strong>Total Users:</strong> {stats['total_users']}</p>
+                        <p><strong>Enabled Users:</strong> {stats['enabled_users']}</p>
+                        <p><strong>Admin Users:</strong> {stats['admin_users']}</p>
+                        <p><strong>Kerberoastable:</strong> {stats['kerberoastable']}</p>
+                        <p><strong>ASREPRoastable:</strong> {stats['asreproastable']}</p>
+                    </div>
+                    
+                    <div class="info-box">
+                        <h3>💻 Computer Statistics</h3>
+                        <p><strong>Total Computers:</strong> {stats['total_computers']}</p>
+                        <p><strong>Enabled Computers:</strong> {stats['enabled_computers']}</p>
+                        <p><strong>Unconstrained Delegation:</strong> {stats['unconstrained_delegation']}</p>
+                    </div>
+                    
+                    <div class="info-box">
+                        <h3>👥 Group Statistics</h3>
+                        <p><strong>Total Groups:</strong> {stats['total_groups']}</p>
+                        <p><strong>High Value Groups:</strong> {stats['high_value_groups']}</p>
+                    </div>
+                </div>
+"""
+            
+            # Add high-value targets
+            if bloodhound_findings.get('high_value_targets'):
+                html_content += """
+                <h3>🎯 High Value Targets</h3>
+                <div class="finding-box">
+                    <ul>"""
+                for target in bloodhound_findings['high_value_targets'][:10]:  # Limit to 10
+                    html_content += f"<li>{target}</li>"
+                if len(bloodhound_findings['high_value_targets']) > 10:
+                    html_content += f"<li>... and {len(bloodhound_findings['high_value_targets']) - 10} more</li>"
+                html_content += """
+                    </ul>
+                </div>"""
+                
+            # Add kerberoastable users
+            if bloodhound_findings.get('kerberoastable_users'):
+                html_content += """
+                <h3>🎫 Kerberoastable Users (from BloodHound)</h3>
+                <div class="finding-box">
+                    <ul>"""
+                for user in bloodhound_findings['kerberoastable_users'][:10]:  # Limit to 10
+                    html_content += f"<li>{user}</li>"
+                if len(bloodhound_findings['kerberoastable_users']) > 10:
+                    html_content += f"<li>... and {len(bloodhound_findings['kerberoastable_users']) - 10} more</li>"
+                html_content += """
+                    </ul>
+                </div>"""
+                
+            # Add computers with unconstrained delegation
+            if bloodhound_findings.get('unconstrained_delegation'):
+                html_content += """
+                <h3>⚠️ Computers with Unconstrained Delegation</h3>
+                <div class="finding-box" style="background: #f8d7da; border-left-color: #dc3545;">
+                    <ul>"""
+                for computer in bloodhound_findings['unconstrained_delegation']:
+                    html_content += f"<li>{computer}</li>"
+                html_content += """
+                    </ul>
+                    <p><strong>Risk:</strong> These computers can impersonate any user that authenticates to them!</p>
+                </div>"""
+                
+            html_content += """
+            </div>"""
 
         # Add conclusion
         html_content += f"""
@@ -675,6 +963,43 @@ EXTRACTED CREDENTIALS
 """
             for hash_info in loot_findings['hashes']:
                 content += f"{hash_info}\n"
+                
+        bloodhound_findings = self.findings.get('bloodhound', {})
+        if bloodhound_findings and bloodhound_findings.get('statistics'):
+            stats = bloodhound_findings['statistics']
+            content += f"""
+BLOODHOUND ANALYSIS
+===================
+User Statistics:
+  Total Users: {stats['total_users']}
+  Enabled Users: {stats['enabled_users']}
+  Admin Users: {stats['admin_users']}
+  Kerberoastable: {stats['kerberoastable']}
+  ASREPRoastable: {stats['asreproastable']}
+  
+Computer Statistics:
+  Total Computers: {stats['total_computers']}
+  Enabled Computers: {stats['enabled_computers']}
+  Unconstrained Delegation: {stats['unconstrained_delegation']}
+  
+Group Statistics:
+  Total Groups: {stats['total_groups']}
+  High Value Groups: {stats['high_value_groups']}
+"""
+            
+            if bloodhound_findings.get('high_value_targets'):
+                content += f"""
+High Value Targets:
+"""
+                for target in bloodhound_findings['high_value_targets'][:10]:
+                    content += f"  - {target}\n"
+                    
+            if bloodhound_findings.get('unconstrained_delegation'):
+                content += f"""
+⚠️  CRITICAL: Computers with Unconstrained Delegation:
+"""
+                for computer in bloodhound_findings['unconstrained_delegation']:
+                    content += f"  - {computer}\n"
         
         content += f"""
 SCAN RESULTS LOCATION

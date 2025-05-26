@@ -720,13 +720,49 @@ class WinReconScanner:
                 ]
                 commands.extend(windap_commands)
                 
-                # BloodHound
-                bloodhound_cmd = (f"{self.config['tools']['bloodhound']} "
-                                f"-u {username} -p {password} -d {domain} "
-                                f"-ns {target.ip} -c all")
-                commands.append(bloodhound_cmd)
-            else:
-                self.logger.info("[*] Using hash authentication - skipping tools that require password")
+                # BloodHound - on l'exécute séparément pour le diriger vers le bon dossier
+                bloodhound_output_dir = target_dir / 'loot' / 'bloodhound'
+                bloodhound_output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Changer le répertoire de travail pour BloodHound
+                bloodhound_cmd = (f"cd {bloodhound_output_dir} && "
+                                f"{self.config['tools']['bloodhound']} "
+                                f"-u {username}@{domain} -p {password} "
+                                f"-d {domain} -dc {target.ip} -c all --zip")
+                
+                # Exécuter BloodHound séparément avec un message de statut
+                self.update_status(target.ip, "BLOODHOUND", "Collecting AD data for graph analysis")
+                self.logger.info(f"Running BloodHound collection against {target.ip}")
+                
+                bloodhound_result = await self.run_command(bloodhound_cmd, timeout=600)  # 10 min timeout
+                
+                if bloodhound_result and 'error' not in bloodhound_result:
+                    self.logger.info(f"BloodHound collection completed for {target.ip}")
+                else:
+                    self.logger.error(f"BloodHound collection failed: {bloodhound_result.get('error', 'Unknown error')}")
+            elif hash_val:
+                # BloodHound avec hash NTLM
+                bloodhound_output_dir = target_dir / 'loot' / 'bloodhound'
+                bloodhound_output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # BloodHound-python supporte l'authentification par hash
+                bloodhound_cmd = (f"cd {bloodhound_output_dir} && "
+                                f"{self.config['tools']['bloodhound']} "
+                                f"-u {username}@{domain} --hashes {hash_val} "
+                                f"-d {domain} -dc {target.ip} -c all --zip")
+                
+                # Exécuter BloodHound avec hash
+                self.update_status(target.ip, "BLOODHOUND", "Collecting AD data with NTLM hash")
+                self.logger.info(f"Running BloodHound collection with NTLM hash against {target.ip}")
+                
+                bloodhound_result = await self.run_command(bloodhound_cmd, timeout=600)
+                
+                if bloodhound_result and 'error' not in bloodhound_result:
+                    self.logger.info(f"BloodHound collection completed for {target.ip}")
+                else:
+                    self.logger.error(f"BloodHound collection failed: {bloodhound_result.get('error', 'Unknown error')}")
+                    
+                self.logger.info("[*] Using hash authentication - some tools skipped")
         else:
             self.logger.info("[*] No credentials provided - skipping authenticated LDAP enumeration")
         
