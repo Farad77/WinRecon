@@ -88,6 +88,45 @@ class WinReconScanner:
             self.detect_and_update_tools()
         self.ensure_tools_available()
         
+        # Status tracking
+        self.current_status = {}
+        self.scan_start_time = None
+        
+    def update_status(self, target_ip: str, phase: str, details: str = ""):
+        """Met à jour le statut du scan pour une cible"""
+        self.current_status[target_ip] = {
+            'phase': phase,
+            'details': details,
+            'timestamp': datetime.now()
+        }
+        
+        # Afficher le statut
+        elapsed = ""
+        if self.scan_start_time:
+            elapsed_seconds = (datetime.now() - self.scan_start_time).total_seconds()
+            elapsed = f" [Elapsed: {int(elapsed_seconds//60)}m {int(elapsed_seconds%60)}s]"
+        
+        print(f"\r[{datetime.now().strftime('%H:%M:%S')}]{elapsed} {target_ip}: {phase} {details}", end="", flush=True)
+        self.logger.info(f"{target_ip}: {phase} {details}")
+    
+    def print_status_summary(self):
+        """Affiche un résumé du statut de tous les scans"""
+        if not self.current_status:
+            return
+            
+        print("\n" + "="*80)
+        print("SCAN STATUS SUMMARY")
+        print("="*80)
+        
+        if self.scan_start_time:
+            elapsed_seconds = (datetime.now() - self.scan_start_time).total_seconds()
+            print(f"Total scan time: {int(elapsed_seconds//60)}m {int(elapsed_seconds%60)}s")
+        
+        for target_ip, status in self.current_status.items():
+            time_str = status['timestamp'].strftime('%H:%M:%S')
+            print(f"{target_ip:<15} | {status['phase']:<20} | {status['details']:<30} | {time_str}")
+        print("="*80)
+        
     def setup_logging(self):
         """Configuration du logging"""
         log_format = '%(asctime)s - %(levelname)s - %(message)s'
@@ -459,6 +498,7 @@ class WinReconScanner:
 
     async def nmap_scan(self, target: Target, target_dir: Path):
         """Scan Nmap initial pour découvrir les services"""
+        self.update_status(target.ip, "NMAP_INIT", "Starting port discovery")
         self.logger.info(f"Starting Nmap scan for {target.ip}")
         
         # Commands for parallel execution
@@ -472,6 +512,7 @@ class WinReconScanner:
                       f"-oA {target_dir}/scans/nmap/udp_top20 {target.ip}")
         
         # Run TCP and UDP scans in parallel
+        self.update_status(target.ip, "NMAP_SCANNING", "TCP + UDP discovery (may take 5-15 min)")
         self.logger.info(f"Running TCP and UDP scans in parallel for {target.ip}")
         tcp_task = asyncio.create_task(self.run_command(tcp_command))
         udp_task = asyncio.create_task(self.run_command(udp_command, timeout=udp_timeout))
@@ -488,10 +529,15 @@ class WinReconScanner:
             udp_result = {'error': str(udp_result)}
         
         # Parser les résultats pour extraire les ports ouverts
+        self.update_status(target.ip, "NMAP_PARSING", "Analyzing discovered ports")
         self.parse_nmap_results(target, tcp_result, udp_result)
         
-        # Scans spécialisés basés sur les ports découverts
-        await self.specialized_nmap_scans(target, target_dir)
+        if target.open_ports:
+            self.update_status(target.ip, "NMAP_SPECIALIZED", f"Found {len(target.open_ports)} ports, running specialized scans")
+            # Scans spécialisés basés sur les ports découverts
+            await self.specialized_nmap_scans(target, target_dir)
+        else:
+            self.update_status(target.ip, "NMAP_COMPLETE", "No open ports found")
 
     async def specialized_nmap_scans(self, target: Target, target_dir: Path):
         """Scans Nmap spécialisés basés sur les services découverts"""
@@ -588,6 +634,7 @@ class WinReconScanner:
         if 445 not in target.open_ports and 139 not in target.open_ports:
             return
             
+        self.update_status(target.ip, "SMB_ENUM", "Enumerating SMB shares and users")
         self.logger.info(f"Starting SMB enumeration for {target.ip}")
         
         commands = [
@@ -639,6 +686,7 @@ class WinReconScanner:
         if 389 not in target.open_ports and 636 not in target.open_ports:
             return
             
+        self.update_status(target.ip, "LDAP_ENUM", "Enumerating AD users and groups")
         self.logger.info(f"Starting LDAP enumeration for {target.ip}")
         
         commands = []
@@ -692,6 +740,7 @@ class WinReconScanner:
         if 88 not in target.open_ports:
             return
             
+        self.update_status(target.ip, "KERBEROS_ENUM", "ASREPRoast and Kerberoasting")
         self.logger.info(f"Starting Kerberos enumeration for {target.ip}")
         
         if not (self.config.get('domain') and self.config.get('username')):
@@ -734,6 +783,7 @@ class WinReconScanner:
         if not found_web_ports:
             return
             
+        self.update_status(target.ip, "WEB_ENUM", f"Scanning web services on ports {found_web_ports}")
         self.logger.info(f"Starting web enumeration for {target.ip}")
         
         for port in found_web_ports:
@@ -755,6 +805,7 @@ class WinReconScanner:
 
     async def scan_target(self, target: Target):
         """Scanne une cible complètement"""
+        self.update_status(target.ip, "STARTING", "Initializing scan")
         self.logger.info(f"Starting comprehensive scan of {target.ip}")
         
         # Créer la structure de dossiers
@@ -764,6 +815,7 @@ class WinReconScanner:
         await self.nmap_scan(target, target_dir)
         
         # Énumérations spécialisées en parallèle
+        self.update_status(target.ip, "SERVICE_ENUM", "Running service enumeration")
         await asyncio.gather(
             self.smb_enumeration(target, target_dir),
             self.ldap_enumeration(target, target_dir),
@@ -772,24 +824,26 @@ class WinReconScanner:
             return_exceptions=True
         )
         
-        self.logger.info(f"Completed scan of {target.ip}")
-        
         # Générer le rapport
+        self.update_status(target.ip, "REPORTING", "Generating reports")
         await self.generate_report(target, target_dir)
+        
+        self.update_status(target.ip, "COMPLETED", f"✓ Scan complete ({len(target.open_ports)} ports)")
+        self.logger.info(f"Completed scan of {target.ip}")
 
     async def generate_report(self, target: Target, target_dir: Path):
         """Génère des rapports complets"""
         self.logger.info(f"Generating reports for {target.ip}")
         
-        # Use only the simple report generator to avoid import issues
+        # Use advanced report generator for detailed analysis
         try:
-            # Import and use simple report generator
+            # Import and use advanced report generator
             import sys
             import os
             # Add current directory to Python path to ensure module can be found
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from simple_report import SimpleReportGenerator
-            report_gen = SimpleReportGenerator(self.config, self.logger)
+            from advanced_report import AdvancedReportGenerator
+            report_gen = AdvancedReportGenerator(self.config, self.logger)
             
             # Prepare results data
             results = {
@@ -815,10 +869,26 @@ class WinReconScanner:
                 raise Exception("Simple report generation failed")
                 
         except Exception as e:
-            self.logger.error(f"Report generation failed: {e}")
-            self.logger.info("Falling back to basic text report...")
-            # Fallback to basic text report
-            await self.generate_simple_report(target, target_dir)
+            self.logger.error(f"Advanced report generation failed: {e}")
+            self.logger.info("Falling back to simple report generator...")
+            # Fallback to simple report generator
+            try:
+                from simple_report import SimpleReportGenerator
+                simple_gen = SimpleReportGenerator(self.config, self.logger)
+                results = {
+                    'target': target.ip,
+                    'hostname': target.hostname,
+                    'domain': target.domain,
+                    'open_ports': list(target.open_ports) if target.open_ports else [],
+                    'services': target.services if hasattr(target, 'services') else {},
+                    'scan_dir': str(target_dir)
+                }
+                simple_gen.generate_reports(results, target_dir)
+                self.logger.info(f"Simple reports generated successfully for {target.ip}")
+            except Exception as e2:
+                self.logger.error(f"Simple report generation also failed: {e2}")
+                # Final fallback to basic text report
+                await self.generate_simple_report(target, target_dir)
     
     async def generate_simple_report(self, target: Target, target_dir: Path):
         """Génère un rapport texte simple en cas d'erreur"""
@@ -880,6 +950,7 @@ class WinReconScanner:
 
     async def run(self, targets: List[str]):
         """Point d'entrée principal"""
+        self.scan_start_time = datetime.now()
         self.logger.info("Starting WinRecon")
         
         # Ensure results directory exists (already created in __init__)
@@ -887,6 +958,14 @@ class WinReconScanner:
         
         # Créer les objets Target
         self.targets = [Target(ip=ip) for ip in targets]
+        
+        print(f"\n{'='*60}")
+        print(f"STARTING WINRECON SCAN")
+        print(f"{'='*60}")
+        print(f"Targets: {len(targets)}")
+        print(f"Start time: {self.scan_start_time.strftime('%H:%M:%S')}")
+        print(f"{'='*60}")
+        print()
         
         # Scanner toutes les cibles
         semaphore = asyncio.Semaphore(self.config['max_concurrent_scans'])
@@ -904,15 +983,22 @@ class WinReconScanner:
         # Generate global summary report
         await self.generate_global_report()
         
+        # Final status summary
+        print("\n")
+        self.print_status_summary()
+        
         self.logger.info("WinRecon completed")
         print("\n" + "="*60)
         print("SCAN COMPLETED")
         print("="*60)
+        total_time = (datetime.now() - self.scan_start_time).total_seconds()
+        print(f"Total scan time: {int(total_time//60)}m {int(total_time%60)}s")
         print(f"Results saved in: {self.results_dir}")
         print(f"\nTarget summaries:")
         for target in self.targets:
             target_dir = self.results_dir / target.ip
-            print(f"  - {target.ip}: {target_dir}/report/")
+            ports_found = len(target.open_ports) if target.open_ports else 0
+            print(f"  - {target.ip}: {ports_found} ports found | {target_dir}/report/")
 
 def parse_targets(target_input: str) -> List[str]:
     """Parse les cibles d'entrée (IP, CIDR, fichier)"""
