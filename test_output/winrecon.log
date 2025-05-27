@@ -1,0 +1,6 @@
+2025-05-27 23:53:26,800 - DEBUG - Executing: nmap -p 445 127.0.0.1 --script smb-enum-users -u testuser -p supersecret
+2025-05-27 23:53:26,817 - DEBUG - Executing: smbclient -L 127.0.0.1 -U testuser --pw-nt-hash aad3b435b51404eeaad3b435b51404ee:8846f7eaee8fb117ad06bdd830b7586c
+2025-05-27 23:53:26,930 - DEBUG - Executing: impacket-secretsdump test.local/testuser:mysecretpass@127.0.0.1
+2025-05-27 23:54:05,632 - DEBUG - Executing: nmap -p 445 127.0.0.1 --script smb-enum-users -u testuser -p supersecret
+2025-05-27 23:54:05,636 - DEBUG - Executing: smbclient -L 127.0.0.1 -U testuser --pw-nt-hash aad3b435b51404eeaad3b435b51404ee:8846f7eaee8fb117ad06bdd830b7586c
+2025-05-27 23:54:05,649 - DEBUG - Executing: impacket-secretsdump test.local/testuser:mysecretpass@127.0.0.1

@@ -128,7 +128,42 @@ class WinReconScanner:
             print(f"{target_ip:<15} | {status['phase']:<20} | {status['details']:<30} | {time_str}")
         print("="*80)
     
-    def ask_confirmation(self, action: str, details: str = "", default: str = "y") -> bool:
+    def mask_sensitive_data(self, command: str) -> str:
+        """Masque les données sensibles dans les commandes pour l'affichage"""
+        import re
+        masked_cmd = command
+        
+        # Masquer les mots de passe (attention aux options comme -p pour port)
+        # Pour SMB/impacket: user -p password
+        if ' -p ' in masked_cmd and 'nmap' not in masked_cmd:
+            masked_cmd = re.sub(r"\s-p\s+['\"]?[^'\"\s]+['\"]?", " -p '[REDACTED]'", masked_cmd)
+        # Pour nmap avec script SMB: -p port --script script -u user -p password
+        if '--script' in masked_cmd and ' -p ' in masked_cmd:
+            # Remplacer seulement le dernier -p (après --script)
+            parts = masked_cmd.split('--script')
+            if len(parts) > 1 and ' -p ' in parts[1]:
+                parts[1] = re.sub(r"\s-p\s+['\"]?[^'\"\s]+['\"]?", " -p '[REDACTED]'", parts[1])
+                masked_cmd = '--script'.join(parts)
+        
+        if '-w ' in masked_cmd:
+            masked_cmd = re.sub(r"-w\s+['\"]?[^'\"\s]+['\"]?", "-w '[REDACTED]'", masked_cmd)
+        if '--password' in masked_cmd:
+            masked_cmd = re.sub(r"--password\s+['\"]?[^'\"\s]+['\"]?", "--password '[REDACTED]'", masked_cmd)
+        if ':' in masked_cmd and ('impacket' in masked_cmd or 'smbclient' in masked_cmd):
+            # Format user:password@target
+            masked_cmd = re.sub(r":([^:@\s]+)@", ":[REDACTED]@", masked_cmd)
+            
+        # Masquer les hashes
+        if '--hashes' in masked_cmd:
+            masked_cmd = re.sub(r"--hashes\s+[^'\"\s]+", "--hashes [REDACTED]", masked_cmd)
+        if '-H ' in masked_cmd:
+            masked_cmd = re.sub(r"-H\s+[^'\"\s]+", "-H [REDACTED]", masked_cmd)
+        if '--pw-nt-hash' in masked_cmd:
+            masked_cmd = re.sub(r"--pw-nt-hash\s+[^'\"\s]+", "--pw-nt-hash [REDACTED]", masked_cmd)
+            
+        return masked_cmd
+    
+    def ask_confirmation(self, action: str, details: str = "", default: str = "y", commands: List[str] = None) -> bool:
         """Demande confirmation à l'utilisateur en mode interactif"""
         if not self.interactive_mode:
             return True
@@ -139,6 +174,16 @@ class WinReconScanner:
         print(f"Action: {action}")
         if details:
             print(f"Details: {details}")
+        
+        # Afficher les commandes qui seront exécutées
+        if commands:
+            print(f"\n📝 Commands that will be executed:")
+            print(f"{'-'*60}")
+            for i, cmd in enumerate(commands, 1):
+                # Masquer les mots de passe et hashes dans l'affichage
+                display_cmd = self.mask_sensitive_data(cmd)
+                print(f"{i:3d}. {display_cmd}")
+            
         print(f"{'='*60}")
         
         while True:
@@ -493,6 +538,15 @@ class WinReconScanner:
     async def run_command(self, command: str, output_file: Optional[Path] = None, timeout: Optional[int] = None) -> tuple:
         """Exécute une commande de manière asynchrone"""
         try:
+            # Display command in interactive mode for educational/debugging purposes
+            if self.interactive_mode:
+                masked_command = self.mask_sensitive_data(command)
+                print(f"\n{'='*60}")
+                print(f"🔧 EXECUTING COMMAND")
+                print(f"{'='*60}")
+                print(f"Command: {masked_command}")
+                print(f"{'='*60}\n")
+            
             self.logger.debug(f"Executing: {command}")
             
             # Use custom timeout if provided, otherwise use default
@@ -531,11 +585,20 @@ class WinReconScanner:
 
     async def nmap_scan(self, target: Target, target_dir: Path):
         """Scan Nmap initial pour découvrir les services"""
+        # Préparer les commandes Nmap
+        tcp_command = (f"{self.config['tools']['nmap']} -sC -sV -O -A -Pn "
+                      f"-oA {target_dir}/scans/nmap/tcp_full {target.ip}")
+        
+        udp_command = (f"{self.config['tools']['nmap']} -sU --top-ports 20 "
+                      f"--max-retries 1 --version-intensity 0 "
+                      f"-oA {target_dir}/scans/nmap/udp_top20 {target.ip}")
+        
         if not self.ask_confirmation(
             "Nmap Port Discovery", 
             f"Run comprehensive TCP and UDP port scans against {target.ip}\n"
             f"TCP: Full scan with service detection and scripts\n"
-            f"UDP: Top 20 ports scan (faster)"
+            f"UDP: Top 20 ports scan (faster)",
+            commands=[tcp_command, udp_command]
         ):
             self.logger.info(f"Skipping Nmap scan for {target.ip}")
             return
@@ -543,15 +606,8 @@ class WinReconScanner:
         self.update_status(target.ip, "NMAP_INIT", "Starting port discovery")
         self.logger.info(f"Starting Nmap scan for {target.ip}")
         
-        # Commands for parallel execution
-        tcp_command = (f"{self.config['tools']['nmap']} -sC -sV -O -A -Pn "
-                      f"-oA {target_dir}/scans/nmap/tcp_full {target.ip}")
-        
-        # UDP scan with reduced timeout and limited ports
+        # UDP scan timeout
         udp_timeout = self.config.get('udp_timeout', 300)  # 5 minutes default
-        udp_command = (f"{self.config['tools']['nmap']} -sU --top-ports 20 "
-                      f"--max-retries 1 --version-intensity 0 "
-                      f"-oA {target_dir}/scans/nmap/udp_top20 {target.ip}")
         
         # Run TCP and UDP scans in parallel
         self.update_status(target.ip, "NMAP_SCANNING", "TCP + UDP discovery (may take 5-15 min)")
@@ -682,18 +738,7 @@ class WinReconScanner:
         else:
             creds_info = "Using anonymous/null sessions"
             
-        if not self.ask_confirmation(
-            "SMB Enumeration", 
-            f"Enumerate SMB shares, users, and groups on {target.ip}\n"
-            f"Tools: enum4linux, smbclient, crackmapexec\n"
-            f"Authentication: {creds_info}"
-        ):
-            self.logger.info(f"Skipping SMB enumeration for {target.ip}")
-            return
-            
-        self.update_status(target.ip, "SMB_ENUM", "Enumerating SMB shares and users")
-        self.logger.info(f"Starting SMB enumeration for {target.ip}")
-        
+        # Préparer toutes les commandes SMB d'abord
         commands = []
         
         # Si on a des credentials
@@ -797,6 +842,20 @@ class WinReconScanner:
                 f"{self.config['tools']['crackmapexec']} smb {target.ip} --groups -u '' -p ''",
             ]
             
+        # Demander confirmation avec affichage des commandes
+        if not self.ask_confirmation(
+            "SMB Enumeration", 
+            f"Enumerate SMB shares, users, and groups on {target.ip}\n"
+            f"Tools: enum4linux, smbclient, crackmapexec\n"
+            f"Authentication: {creds_info}",
+            commands=commands
+        ):
+            self.logger.info(f"Skipping SMB enumeration for {target.ip}")
+            return
+            
+        self.update_status(target.ip, "SMB_ENUM", "Enumerating SMB shares and users")
+        self.logger.info(f"Starting SMB enumeration for {target.ip}")
+            
         # Exécuter tous les scans SMB
         for i, command in enumerate(commands):
             output_file = target_dir / 'scans' / 'smb' / f'smb_scan_{i+1}.txt'
@@ -807,27 +866,9 @@ class WinReconScanner:
         if 389 not in target.open_ports and 636 not in target.open_ports:
             return
             
-        creds_info = ""
-        if self.config.get('username'):
-            creds_info = f"Using credentials: {self.config.get('username')}@{self.config.get('domain', 'WORKGROUP')}"
-            tools_info = "Tools: ldapsearch, windapsearch, BloodHound"
-        else:
-            creds_info = "Using anonymous queries only"
-            tools_info = "Tools: ldapsearch (anonymous)"
-            
-        if not self.ask_confirmation(
-            "LDAP/Active Directory Enumeration", 
-            f"Enumerate AD users, groups, and collect BloodHound data from {target.ip}\n"
-            f"{tools_info}\n"
-            f"Authentication: {creds_info}"
-        ):
-            self.logger.info(f"Skipping LDAP enumeration for {target.ip}")
-            return
-            
-        self.update_status(target.ip, "LDAP_ENUM", "Enumerating AD users and groups")
-        self.logger.info(f"Starting LDAP enumeration for {target.ip}")
-        
+        # Préparer toutes les commandes LDAP d'abord
         commands = []
+        bloodhound_cmd = None
         
         # ldapsearch anonyme (toujours essayer)
         commands.extend([
@@ -847,13 +888,9 @@ class WinReconScanner:
             # ldapsearch authentifié
             if password:
                 # Construire le Bind DN pour ldapsearch
-                # Format typique pour AD: CN=username,CN=Users,DC=domain,DC=com
-                # Mais on peut aussi utiliser le format username@domain.com qui est plus simple
                 bind_dn = f"{username}@{domain}"
                 
                 # Construire le base DN à partir du domaine
-                # Exemple: corp.local -> dc=corp,dc=local
-                # Exemple: sub.corp.local -> dc=sub,dc=corp,dc=local
                 base_dn = ','.join([f'dc={part}' for part in domain.split('.')])
                 
                 # ldapsearch avec authentification
@@ -880,7 +917,7 @@ class WinReconScanner:
                 ]
                 commands.extend(auth_ldap_commands)
                 
-                # windapsearch - only if password provided (doesn't support hash)
+                # windapsearch
                 windap_commands = [
                     f"{self.config['tools']['windapsearch']} -d {domain} "
                     f"-u {username} -p {password} --dc-ip {target.ip} -U",
@@ -893,12 +930,10 @@ class WinReconScanner:
                 ]
                 commands.extend(windap_commands)
                 
-                # BloodHound - on l'exécute séparément pour le diriger vers le bon dossier
+                # BloodHound - stocker la commande pour l'afficher
                 bloodhound_output_dir = target_dir / 'loot' / 'bloodhound'
-                bloodhound_output_dir.mkdir(parents=True, exist_ok=True)
                 
                 # BloodHound-python avec syntaxe correcte
-                # Format: username@domain ou juste username si le domaine est spécifié avec -d
                 bloodhound_cmd = (f"cd {bloodhound_output_dir} && "
                                 f"{self.config['tools']['bloodhound']} "
                                 f"-u {username}@{domain} "
@@ -911,45 +946,9 @@ class WinReconScanner:
                                 f"--disable-pooling "
                                 f"--zip")
                 
-                # Exécuter BloodHound séparément avec un message de statut
-                self.update_status(target.ip, "BLOODHOUND", "Collecting AD data for graph analysis (All methods)")
-                self.logger.info(f"Running BloodHound collection against {target.ip}")
-                self.logger.debug(f"BloodHound command: {bloodhound_cmd}")
-                
-                bloodhound_result = await self.run_command(bloodhound_cmd, timeout=900)  # 15 min timeout pour All
-                
-                if bloodhound_result and 'error' not in bloodhound_result:
-                    self.logger.info(f"BloodHound collection completed for {target.ip}")
-                    # Vérifier si des fichiers ont été générés
-                    json_files = list(bloodhound_output_dir.glob('*.json'))
-                    zip_files = list(bloodhound_output_dir.glob('*.zip'))
-                    if json_files or zip_files:
-                        self.logger.info(f"BloodHound generated {len(json_files)} JSON files and {len(zip_files)} ZIP files")
-                    else:
-                        self.logger.warning("BloodHound completed but no output files found")
-                else:
-                    self.logger.error(f"BloodHound collection failed: {bloodhound_result.get('error', 'Unknown error')}")
-                    # Fallback: essayer avec une collection plus limitée (DCOnly)
-                    self.logger.info("Attempting fallback BloodHound collection with DCOnly method...")
-                    
-                    bloodhound_fallback_cmd = (f"cd {bloodhound_output_dir} && "
-                                             f"{self.config['tools']['bloodhound']} "
-                                             f"-u {username}@{domain} "
-                                             f"-p '{password}' "
-                                             f"-d {domain} "
-                                             f"-ns {target.ip} "
-                                             f"-dc {target.ip} "
-                                             f"-c DCOnly "
-                                             f"--dns-tcp "
-                                             f"--zip")
-                    
-                    fallback_result = await self.run_command(bloodhound_fallback_cmd, timeout=300)
-                    if fallback_result and 'error' not in fallback_result:
-                        self.logger.info("BloodHound DCOnly collection completed successfully")
             elif hash_val:
                 # BloodHound avec hash NTLM
                 bloodhound_output_dir = target_dir / 'loot' / 'bloodhound'
-                bloodhound_output_dir.mkdir(parents=True, exist_ok=True)
                 
                 # BloodHound-python supporte l'authentification par hash au format LM:NTLM
                 # Si seulement NTLM fourni, ajouter des zéros pour LM
@@ -970,52 +969,63 @@ class WinReconScanner:
                                 f"--disable-pooling "
                                 f"--auth-method ntlm "
                                 f"--zip")
-                
-                # Exécuter BloodHound avec hash
-                self.update_status(target.ip, "BLOODHOUND", "Collecting AD data with NTLM hash (All methods)")
-                self.logger.info(f"Running BloodHound collection with NTLM hash against {target.ip}")
-                self.logger.debug(f"BloodHound hash command: bloodhound-python -u {username}@{domain} --hashes {formatted_hash[:20]}... [REDACTED]")
-                
-                bloodhound_result = await self.run_command(bloodhound_cmd, timeout=900)
-                
-                if bloodhound_result and 'error' not in bloodhound_result:
-                    self.logger.info(f"BloodHound collection with hash completed for {target.ip}")
-                    # Vérifier si des fichiers ont été générés
-                    json_files = list(bloodhound_output_dir.glob('*.json'))
-                    zip_files = list(bloodhound_output_dir.glob('*.zip'))
-                    if json_files or zip_files:
-                        self.logger.info(f"BloodHound generated {len(json_files)} JSON files and {len(zip_files)} ZIP files")
-                    else:
-                        self.logger.warning("BloodHound completed but no output files found")
-                else:
-                    self.logger.error(f"BloodHound collection with hash failed: {bloodhound_result.get('error', 'Unknown error')}")
-                    # Fallback: essayer avec DCOnly
-                    self.logger.info("Attempting fallback BloodHound collection with DCOnly method...")
-                    
-                    bloodhound_fallback_cmd = (f"cd {bloodhound_output_dir} && "
-                                             f"{self.config['tools']['bloodhound']} "
-                                             f"-u {username}@{domain} "
-                                             f"--hashes {formatted_hash} "
-                                             f"-d {domain} "
-                                             f"-ns {target.ip} "
-                                             f"-dc {target.ip} "
-                                             f"-c DCOnly "
-                                             f"--dns-tcp "
-                                             f"--auth-method ntlm "
-                                             f"--zip")
-                    
-                    fallback_result = await self.run_command(bloodhound_fallback_cmd, timeout=300)
-                    if fallback_result and 'error' not in fallback_result:
-                        self.logger.info("BloodHound DCOnly collection with hash completed successfully")
-                    
-                self.logger.info("[*] Using hash authentication - some tools skipped")
+        
+        # Préparer les informations pour la confirmation
+        creds_info = ""
+        tools_info = ""
+        all_commands = commands.copy()
+        
+        if self.config.get('username'):
+            creds_info = f"Using credentials: {self.config.get('username')}@{self.config.get('domain', 'WORKGROUP')}"
+            tools_info = "Tools: ldapsearch, windapsearch, BloodHound"
+            if bloodhound_cmd:
+                all_commands.append(bloodhound_cmd)
         else:
-            self.logger.info("[*] No credentials provided - skipping authenticated LDAP enumeration")
+            creds_info = "Using anonymous queries only"
+            tools_info = "Tools: ldapsearch (anonymous)"
+        
+        # Demander confirmation avec affichage des commandes
+        if not self.ask_confirmation(
+            "LDAP/Active Directory Enumeration", 
+            f"Enumerate AD users, groups, and collect BloodHound data from {target.ip}\n"
+            f"{tools_info}\n"
+            f"Authentication: {creds_info}",
+            commands=all_commands
+        ):
+            self.logger.info(f"Skipping LDAP enumeration for {target.ip}")
+            return
+            
+        self.update_status(target.ip, "LDAP_ENUM", "Enumerating AD users and groups")
+        self.logger.info(f"Starting LDAP enumeration for {target.ip}")
         
         # Exécuter tous les scans LDAP
         for i, command in enumerate(commands):
             output_file = target_dir / 'scans' / 'ldap' / f'ldap_scan_{i+1}.txt'
             await self.run_command(command, output_file)
+        
+        # Exécuter BloodHound si disponible
+        if bloodhound_cmd:
+            bloodhound_output_dir.mkdir(parents=True, exist_ok=True)
+            
+            self.update_status(target.ip, "BLOODHOUND", "Collecting AD data for graph analysis (All methods)")
+            self.logger.info(f"Running BloodHound collection against {target.ip}")
+            self.logger.debug(f"BloodHound command: {bloodhound_cmd}")
+            
+            bloodhound_result = await self.run_command(bloodhound_cmd, timeout=900)  # 15 min timeout
+            
+            if bloodhound_result and 'error' not in bloodhound_result:
+                self.logger.info(f"BloodHound collection completed for {target.ip}")
+                # Vérifier si des fichiers ont été générés
+                json_files = list(bloodhound_output_dir.glob('*.json'))
+                zip_files = list(bloodhound_output_dir.glob('*.zip'))
+                if json_files or zip_files:
+                    self.logger.info(f"BloodHound generated {len(json_files)} JSON files and {len(zip_files)} ZIP files")
+                else:
+                    self.logger.warning("BloodHound completed but no output files found")
+                    self.logger.warning("Check if the domain/username/password are correct")
+                    self.logger.warning("Also verify that the target is a domain controller")
+            else:
+                self.logger.error(f"BloodHound collection failed: {bloodhound_result.get('error', 'Unknown error')}")
 
     async def kerberos_enumeration(self, target: Target, target_dir: Path):
         """Énumération Kerberos"""

@@ -188,6 +188,78 @@ class KerberosTechniques:
         self.config = config
         self.target_dir = target_dir
         self.logger = logger
+    
+    def _mask_sensitive_data(self, command: str) -> str:
+        """Masque les données sensibles dans les commandes pour l'affichage"""
+        masked_cmd = command
+        
+        # Masquer les mots de passe
+        if '-p ' in masked_cmd:
+            masked_cmd = re.sub(r"-p\s+['\"]?[^'\"\s]+['\"]?", "-p '[REDACTED]'", masked_cmd)
+        if '-w ' in masked_cmd:
+            masked_cmd = re.sub(r"-w\s+['\"]?[^'\"\s]+['\"]?", "-w '[REDACTED]'", masked_cmd)
+        if '--password' in masked_cmd:
+            masked_cmd = re.sub(r"--password\s+['\"]?[^'\"\s]+['\"]?", "--password '[REDACTED]'", masked_cmd)
+        if ':' in masked_cmd and ('impacket' in masked_cmd or 'smbclient' in masked_cmd):
+            # Format user:password@target
+            masked_cmd = re.sub(r":([^:@\s]+)@", ":[REDACTED]@", masked_cmd)
+            
+        # Masquer les hashes
+        if '--hashes' in masked_cmd:
+            masked_cmd = re.sub(r"--hashes\s+[^'\"\s]+", "--hashes [REDACTED]", masked_cmd)
+        if '-hashes' in masked_cmd:
+            masked_cmd = re.sub(r"-hashes\s+[^'\"\s]+", "-hashes [REDACTED]", masked_cmd)
+        if '-H ' in masked_cmd:
+            masked_cmd = re.sub(r"-H\s+[^'\"\s]+", "-H [REDACTED]", masked_cmd)
+        if '--pw-nt-hash' in masked_cmd:
+            masked_cmd = re.sub(r"--pw-nt-hash\s+[^'\"\s]+", "--pw-nt-hash [REDACTED]", masked_cmd)
+            
+        return masked_cmd
+    
+    async def _run_command(self, command: str, output_file: Optional[Path] = None) -> Dict:
+        """Exécute une commande de manière asynchrone"""
+        try:
+            # Display command in interactive mode for educational/debugging purposes
+            if self.config.get('interactive_mode', False):
+                masked_command = self._mask_sensitive_data(command)
+                print(f"\n{'='*60}")
+                print(f"🔧 EXECUTING COMMAND (Kerberos)")
+                print(f"{'='*60}")
+                print(f"Command: {masked_command}")
+                print(f"{'='*60}\n")
+            
+            self.logger.debug(f"Executing: {command}")
+            
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), 
+                timeout=self.config.get('timeout', 3600)
+            )
+            
+            result = {
+                'command': command,
+                'returncode': process.returncode,
+                'stdout': stdout.decode('utf-8', errors='ignore'),
+                'stderr': stderr.decode('utf-8', errors='ignore')
+            }
+            
+            if output_file:
+                with open(output_file, 'w') as f:
+                    f.write(result['stdout'])
+                    
+            return result
+            
+        except asyncio.TimeoutError:
+            self.logger.error(f"Command timeout: {command}")
+            return {'command': command, 'error': 'timeout'}
+        except Exception as e:
+            self.logger.error(f"Command failed: {command} - {e}")
+            return {'command': command, 'error': str(e)}
         
     async def asrep_roasting(self, target_ip: str, users: List[str]) -> Dict:
         """Attaque ASREPRoasting contre les utilisateurs sans pré-auth"""
@@ -274,6 +346,78 @@ class ADCSTechniques:
         self.config = config
         self.target_dir = target_dir
         self.logger = logger
+    
+    def _mask_sensitive_data(self, command: str) -> str:
+        """Masque les données sensibles dans les commandes pour l'affichage"""
+        masked_cmd = command
+        
+        # Masquer les mots de passe
+        if '-p ' in masked_cmd:
+            masked_cmd = re.sub(r"-p\s+['\"]?[^'\"\s]+['\"]?", "-p '[REDACTED]'", masked_cmd)
+        if '-w ' in masked_cmd:
+            masked_cmd = re.sub(r"-w\s+['\"]?[^'\"\s]+['\"]?", "-w '[REDACTED]'", masked_cmd)
+        if '--password' in masked_cmd:
+            masked_cmd = re.sub(r"--password\s+['\"]?[^'\"\s]+['\"]?", "--password '[REDACTED]'", masked_cmd)
+        if ':' in masked_cmd and ('impacket' in masked_cmd or 'smbclient' in masked_cmd):
+            # Format user:password@target
+            masked_cmd = re.sub(r":([^:@\s]+)@", ":[REDACTED]@", masked_cmd)
+            
+        # Masquer les hashes
+        if '--hashes' in masked_cmd:
+            masked_cmd = re.sub(r"--hashes\s+[^'\"\s]+", "--hashes [REDACTED]", masked_cmd)
+        if '-hashes' in masked_cmd:
+            masked_cmd = re.sub(r"-hashes\s+[^'\"\s]+", "-hashes [REDACTED]", masked_cmd)
+        if '-H ' in masked_cmd:
+            masked_cmd = re.sub(r"-H\s+[^'\"\s]+", "-H [REDACTED]", masked_cmd)
+        if '--pw-nt-hash' in masked_cmd:
+            masked_cmd = re.sub(r"--pw-nt-hash\s+[^'\"\s]+", "--pw-nt-hash [REDACTED]", masked_cmd)
+            
+        return masked_cmd
+    
+    async def _run_command(self, command: str, output_file: Optional[Path] = None) -> Dict:
+        """Exécute une commande de manière asynchrone"""
+        try:
+            # Display command in interactive mode for educational/debugging purposes
+            if self.config.get('interactive_mode', False):
+                masked_command = self._mask_sensitive_data(command)
+                print(f"\n{'='*60}")
+                print(f"🔧 EXECUTING COMMAND (ADCS)")
+                print(f"{'='*60}")
+                print(f"Command: {masked_command}")
+                print(f"{'='*60}\n")
+            
+            self.logger.debug(f"Executing: {command}")
+            
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), 
+                timeout=self.config.get('timeout', 3600)
+            )
+            
+            result = {
+                'command': command,
+                'returncode': process.returncode,
+                'stdout': stdout.decode('utf-8', errors='ignore'),
+                'stderr': stderr.decode('utf-8', errors='ignore')
+            }
+            
+            if output_file:
+                with open(output_file, 'w') as f:
+                    f.write(result['stdout'])
+                    
+            return result
+            
+        except asyncio.TimeoutError:
+            self.logger.error(f"Command timeout: {command}")
+            return {'command': command, 'error': 'timeout'}
+        except Exception as e:
+            self.logger.error(f"Command failed: {command} - {e}")
+            return {'command': command, 'error': str(e)}
         
     async def enumerate_certificate_authorities(self, target_ip: str) -> Dict:
         """Énumération des autorités de certification"""
@@ -331,6 +475,78 @@ class CoercionTechniques:
         self.config = config
         self.target_dir = target_dir
         self.logger = logger
+    
+    def _mask_sensitive_data(self, command: str) -> str:
+        """Masque les données sensibles dans les commandes pour l'affichage"""
+        masked_cmd = command
+        
+        # Masquer les mots de passe
+        if '-p ' in masked_cmd:
+            masked_cmd = re.sub(r"-p\s+['\"]?[^'\"\s]+['\"]?", "-p '[REDACTED]'", masked_cmd)
+        if '-w ' in masked_cmd:
+            masked_cmd = re.sub(r"-w\s+['\"]?[^'\"\s]+['\"]?", "-w '[REDACTED]'", masked_cmd)
+        if '--password' in masked_cmd:
+            masked_cmd = re.sub(r"--password\s+['\"]?[^'\"\s]+['\"]?", "--password '[REDACTED]'", masked_cmd)
+        if ':' in masked_cmd and ('impacket' in masked_cmd or 'smbclient' in masked_cmd):
+            # Format user:password@target
+            masked_cmd = re.sub(r":([^:@\s]+)@", ":[REDACTED]@", masked_cmd)
+            
+        # Masquer les hashes
+        if '--hashes' in masked_cmd:
+            masked_cmd = re.sub(r"--hashes\s+[^'\"\s]+", "--hashes [REDACTED]", masked_cmd)
+        if '-hashes' in masked_cmd:
+            masked_cmd = re.sub(r"-hashes\s+[^'\"\s]+", "-hashes [REDACTED]", masked_cmd)
+        if '-H ' in masked_cmd:
+            masked_cmd = re.sub(r"-H\s+[^'\"\s]+", "-H [REDACTED]", masked_cmd)
+        if '--pw-nt-hash' in masked_cmd:
+            masked_cmd = re.sub(r"--pw-nt-hash\s+[^'\"\s]+", "--pw-nt-hash [REDACTED]", masked_cmd)
+            
+        return masked_cmd
+    
+    async def _run_command(self, command: str, output_file: Optional[Path] = None) -> Dict:
+        """Exécute une commande de manière asynchrone"""
+        try:
+            # Display command in interactive mode for educational/debugging purposes
+            if self.config.get('interactive_mode', False):
+                masked_command = self._mask_sensitive_data(command)
+                print(f"\n{'='*60}")
+                print(f"🔧 EXECUTING COMMAND (Coercion)")
+                print(f"{'='*60}")
+                print(f"Command: {masked_command}")
+                print(f"{'='*60}\n")
+            
+            self.logger.debug(f"Executing: {command}")
+            
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), 
+                timeout=self.config.get('timeout', 3600)
+            )
+            
+            result = {
+                'command': command,
+                'returncode': process.returncode,
+                'stdout': stdout.decode('utf-8', errors='ignore'),
+                'stderr': stderr.decode('utf-8', errors='ignore')
+            }
+            
+            if output_file:
+                with open(output_file, 'w') as f:
+                    f.write(result['stdout'])
+                    
+            return result
+            
+        except asyncio.TimeoutError:
+            self.logger.error(f"Command timeout: {command}")
+            return {'command': command, 'error': 'timeout'}
+        except Exception as e:
+            self.logger.error(f"Command failed: {command} - {e}")
+            return {'command': command, 'error': str(e)}
         
     async def petitpotam_scan(self, target_ip: str) -> Dict:
         """Scan PetitPotam pour la coercition NTLM"""
@@ -394,6 +610,78 @@ class PostExploitationTechniques:
         self.config = config
         self.target_dir = target_dir
         self.logger = logger
+    
+    def _mask_sensitive_data(self, command: str) -> str:
+        """Masque les données sensibles dans les commandes pour l'affichage"""
+        masked_cmd = command
+        
+        # Masquer les mots de passe
+        if '-p ' in masked_cmd:
+            masked_cmd = re.sub(r"-p\s+['\"]?[^'\"\s]+['\"]?", "-p '[REDACTED]'", masked_cmd)
+        if '-w ' in masked_cmd:
+            masked_cmd = re.sub(r"-w\s+['\"]?[^'\"\s]+['\"]?", "-w '[REDACTED]'", masked_cmd)
+        if '--password' in masked_cmd:
+            masked_cmd = re.sub(r"--password\s+['\"]?[^'\"\s]+['\"]?", "--password '[REDACTED]'", masked_cmd)
+        if ':' in masked_cmd and ('impacket' in masked_cmd or 'smbclient' in masked_cmd):
+            # Format user:password@target
+            masked_cmd = re.sub(r":([^:@\s]+)@", ":[REDACTED]@", masked_cmd)
+            
+        # Masquer les hashes
+        if '--hashes' in masked_cmd:
+            masked_cmd = re.sub(r"--hashes\s+[^'\"\s]+", "--hashes [REDACTED]", masked_cmd)
+        if '-hashes' in masked_cmd:
+            masked_cmd = re.sub(r"-hashes\s+[^'\"\s]+", "-hashes [REDACTED]", masked_cmd)
+        if '-H ' in masked_cmd:
+            masked_cmd = re.sub(r"-H\s+[^'\"\s]+", "-H [REDACTED]", masked_cmd)
+        if '--pw-nt-hash' in masked_cmd:
+            masked_cmd = re.sub(r"--pw-nt-hash\s+[^'\"\s]+", "--pw-nt-hash [REDACTED]", masked_cmd)
+            
+        return masked_cmd
+    
+    async def _run_command(self, command: str, output_file: Optional[Path] = None) -> Dict:
+        """Exécute une commande de manière asynchrone"""
+        try:
+            # Display command in interactive mode for educational/debugging purposes
+            if self.config.get('interactive_mode', False):
+                masked_command = self._mask_sensitive_data(command)
+                print(f"\n{'='*60}")
+                print(f"🔧 EXECUTING COMMAND (Post-Exploitation)")
+                print(f"{'='*60}")
+                print(f"Command: {masked_command}")
+                print(f"{'='*60}\n")
+            
+            self.logger.debug(f"Executing: {command}")
+            
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), 
+                timeout=self.config.get('timeout', 3600)
+            )
+            
+            result = {
+                'command': command,
+                'returncode': process.returncode,
+                'stdout': stdout.decode('utf-8', errors='ignore'),
+                'stderr': stderr.decode('utf-8', errors='ignore')
+            }
+            
+            if output_file:
+                with open(output_file, 'w') as f:
+                    f.write(result['stdout'])
+                    
+            return result
+            
+        except asyncio.TimeoutError:
+            self.logger.error(f"Command timeout: {command}")
+            return {'command': command, 'error': 'timeout'}
+        except Exception as e:
+            self.logger.error(f"Command failed: {command} - {e}")
+            return {'command': command, 'error': str(e)}
         
     async def secretsdump(self, target_ip: str) -> Dict:
         """Dump des secrets avec Impacket"""
@@ -598,9 +886,45 @@ class TechniquesOrchestrator:
         
         return recommendations
     
+    def _mask_sensitive_data(self, command: str) -> str:
+        """Masque les données sensibles dans les commandes pour l'affichage"""
+        masked_cmd = command
+        
+        # Masquer les mots de passe
+        if '-p ' in masked_cmd:
+            masked_cmd = re.sub(r"-p\s+['\"]?[^'\"\s]+['\"]?", "-p '[REDACTED]'", masked_cmd)
+        if '-w ' in masked_cmd:
+            masked_cmd = re.sub(r"-w\s+['\"]?[^'\"\s]+['\"]?", "-w '[REDACTED]'", masked_cmd)
+        if '--password' in masked_cmd:
+            masked_cmd = re.sub(r"--password\s+['\"]?[^'\"\s]+['\"]?", "--password '[REDACTED]'", masked_cmd)
+        if ':' in masked_cmd and ('impacket' in masked_cmd or 'smbclient' in masked_cmd):
+            # Format user:password@target
+            masked_cmd = re.sub(r":([^:@\s]+)@", ":[REDACTED]@", masked_cmd)
+            
+        # Masquer les hashes
+        if '--hashes' in masked_cmd:
+            masked_cmd = re.sub(r"--hashes\s+[^'\"\s]+", "--hashes [REDACTED]", masked_cmd)
+        if '-hashes' in masked_cmd:
+            masked_cmd = re.sub(r"-hashes\s+[^'\"\s]+", "-hashes [REDACTED]", masked_cmd)
+        if '-H ' in masked_cmd:
+            masked_cmd = re.sub(r"-H\s+[^'\"\s]+", "-H [REDACTED]", masked_cmd)
+        if '--pw-nt-hash' in masked_cmd:
+            masked_cmd = re.sub(r"--pw-nt-hash\s+[^'\"\s]+", "--pw-nt-hash [REDACTED]", masked_cmd)
+            
+        return masked_cmd
+    
     async def _run_command(self, command: str, output_file: Optional[Path] = None) -> Dict:
         """Exécute une commande de manière asynchrone"""
         try:
+            # Display command in interactive mode for educational/debugging purposes
+            if self.config.get('interactive_mode', False):
+                masked_command = self._mask_sensitive_data(command)
+                print(f"\n{'='*60}")
+                print(f"🔧 EXECUTING COMMAND (Techniques)")
+                print(f"{'='*60}")
+                print(f"Command: {masked_command}")
+                print(f"{'='*60}\n")
+            
             self.logger.debug(f"Executing: {command}")
             
             process = await asyncio.create_subprocess_shell(
