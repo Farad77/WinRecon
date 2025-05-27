@@ -91,6 +91,7 @@ class WinReconScanner:
         # Status tracking
         self.current_status = {}
         self.scan_start_time = None
+        self.interactive_mode = False
         
     def update_status(self, target_ip: str, phase: str, details: str = ""):
         """Met à jour le statut du scan pour une cible"""
@@ -126,6 +127,38 @@ class WinReconScanner:
             time_str = status['timestamp'].strftime('%H:%M:%S')
             print(f"{target_ip:<15} | {status['phase']:<20} | {status['details']:<30} | {time_str}")
         print("="*80)
+    
+    def ask_confirmation(self, action: str, details: str = "", default: str = "y") -> bool:
+        """Demande confirmation à l'utilisateur en mode interactif"""
+        if not self.interactive_mode:
+            return True
+            
+        print(f"\n{'='*60}")
+        print(f"🤔 CONFIRMATION REQUIRED")
+        print(f"{'='*60}")
+        print(f"Action: {action}")
+        if details:
+            print(f"Details: {details}")
+        print(f"{'='*60}")
+        
+        while True:
+            response = input(f"Do you want to proceed? (y/n/s) [default: {default}]: ").strip().lower()
+            
+            if not response:
+                response = default
+                
+            if response in ['y', 'yes']:
+                print("✅ Proceeding with action...\n")
+                return True
+            elif response in ['n', 'no']:
+                print("❌ Skipping this action...\n")
+                return False
+            elif response in ['s', 'skip']:
+                print("⏭️  Disabling interactive mode for remaining actions...\n")
+                self.interactive_mode = False
+                return True
+            else:
+                print("Please enter 'y' (yes), 'n' (no), or 's' (skip all confirmations)")
         
     def setup_logging(self):
         """Configuration du logging"""
@@ -498,6 +531,15 @@ class WinReconScanner:
 
     async def nmap_scan(self, target: Target, target_dir: Path):
         """Scan Nmap initial pour découvrir les services"""
+        if not self.ask_confirmation(
+            "Nmap Port Discovery", 
+            f"Run comprehensive TCP and UDP port scans against {target.ip}\n"
+            f"TCP: Full scan with service detection and scripts\n"
+            f"UDP: Top 20 ports scan (faster)"
+        ):
+            self.logger.info(f"Skipping Nmap scan for {target.ip}")
+            return
+            
         self.update_status(target.ip, "NMAP_INIT", "Starting port discovery")
         self.logger.info(f"Starting Nmap scan for {target.ip}")
         
@@ -634,47 +676,126 @@ class WinReconScanner:
         if 445 not in target.open_ports and 139 not in target.open_ports:
             return
             
+        creds_info = ""
+        if self.config.get('username'):
+            creds_info = f"Using credentials: {self.config.get('username')}@{self.config.get('domain', 'WORKGROUP')}"
+        else:
+            creds_info = "Using anonymous/null sessions"
+            
+        if not self.ask_confirmation(
+            "SMB Enumeration", 
+            f"Enumerate SMB shares, users, and groups on {target.ip}\n"
+            f"Tools: enum4linux, smbclient, crackmapexec\n"
+            f"Authentication: {creds_info}"
+        ):
+            self.logger.info(f"Skipping SMB enumeration for {target.ip}")
+            return
+            
         self.update_status(target.ip, "SMB_ENUM", "Enumerating SMB shares and users")
         self.logger.info(f"Starting SMB enumeration for {target.ip}")
         
-        commands = [
-            # enum4linux
-            f"{self.config['tools']['enum4linux']} -a {target.ip}",
-            
-            # smbclient liste des partages
-            f"{self.config['tools']['smbclient']} -L //{target.ip}/ -N",
-            
-            # crackmapexec
-            f"{self.config['tools']['crackmapexec']} smb {target.ip}",
-            f"{self.config['tools']['crackmapexec']} smb {target.ip} --shares",
-            f"{self.config['tools']['crackmapexec']} smb {target.ip} --users",
-            f"{self.config['tools']['crackmapexec']} smb {target.ip} --groups",
-            f"{self.config['tools']['crackmapexec']} smb {target.ip} --local-auth",
-        ]
+        commands = []
         
         # Si on a des credentials
         if self.config.get('username') and (self.config.get('password') or self.config.get('hash')):
+            username = self.config['username']
+            domain = self.config.get('domain', 'WORKGROUP')
+            
             if self.config.get('password'):
+                password = self.config['password']
+                
+                # enum4linux avec credentials
+                commands.append(f"{self.config['tools']['enum4linux']} -u {username} -p {password} -a {target.ip}")
+                
+                # smbclient avec credentials (liste des partages)
+                if domain and domain != 'WORKGROUP':
+                    commands.append(f"{self.config['tools']['smbclient']} -L //{target.ip}/ -U '{domain}/{username}%{password}'")
+                else:
+                    commands.append(f"{self.config['tools']['smbclient']} -L //{target.ip}/ -U '{username}%{password}'")
+                
+                # crackmapexec avec credentials - toutes les énumérations
                 auth_commands = [
                     f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                    f"-u {self.config['username']} -p {self.config['password']} --shares",
+                    f"-u {username} -p {password} -d {domain}",
                     f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                    f"-u {self.config['username']} -p {self.config['password']} --users",
+                    f"-u {username} -p {password} -d {domain} --shares",
                     f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                    f"-u {self.config['username']} -p {self.config['password']} --groups",
+                    f"-u {username} -p {password} -d {domain} --users",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -p {password} -d {domain} --groups",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -p {password} -d {domain} --pass-pol",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -p {password} -d {domain} --rid-brute",
+                    # Enum des sessions actives
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -p {password} -d {domain} --sessions",
+                    # Enum des disks
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -p {password} -d {domain} --disks",
+                    # Spider des partages pour lister les fichiers
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -p {password} -d {domain} -M spider_plus",
                 ]
+                commands.extend(auth_commands)
+                
+                # Ajouter des commandes pour tester l'accès aux partages individuels
+                self.logger.info("Adding commands to test write access on shares...")
+                
             else:  # Using hash
+                hash_val = self.config['hash']
+                
+                # smbclient avec hash NTLM
+                # Note: smbclient utilise --pw-nt-hash pour indiquer que le mot de passe est un hash NT
+                # Si le hash est au format LM:NT, on extrait juste la partie NT
+                nt_hash = hash_val.split(':')[-1] if ':' in hash_val else hash_val
+                
+                if domain and domain != 'WORKGROUP':
+                    commands.append(f"{self.config['tools']['smbclient']} -L //{target.ip}/ -U '{username}' --pw-nt-hash {nt_hash} -W {domain}")
+                else:
+                    commands.append(f"{self.config['tools']['smbclient']} -L //{target.ip}/ -U '{username}' --pw-nt-hash {nt_hash}")
+                
+                # crackmapexec avec hash
                 auth_commands = [
                     f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                    f"-u {self.config['username']} -H {self.config['hash']} --shares",
+                    f"-u {username} -H {hash_val} -d {domain}",
                     f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                    f"-u {self.config['username']} -H {self.config['hash']} --users",
+                    f"-u {username} -H {hash_val} -d {domain} --shares",
                     f"{self.config['tools']['crackmapexec']} smb {target.ip} "
-                    f"-u {self.config['username']} -H {self.config['hash']} --groups",
+                    f"-u {username} -H {hash_val} -d {domain} --users",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -H {hash_val} -d {domain} --groups",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -H {hash_val} -d {domain} --pass-pol",
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -H {hash_val} -d {domain} --rid-brute",
+                    # Enum des sessions actives
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -H {hash_val} -d {domain} --sessions",
+                    # Enum des disks
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -H {hash_val} -d {domain} --disks",
+                    # Spider des partages pour lister les fichiers
+                    f"{self.config['tools']['crackmapexec']} smb {target.ip} "
+                    f"-u {username} -H {hash_val} -d {domain} -M spider_plus",
                 ]
-            commands.extend(auth_commands)
+                commands.extend(auth_commands)
         else:
-            self.logger.info("[*] No credentials provided - skipping authenticated SMB enumeration")
+            # Sans credentials - essayer null session et anonymous
+            self.logger.info("[*] No credentials provided - trying null sessions")
+            commands = [
+                # enum4linux anonyme
+                f"{self.config['tools']['enum4linux']} -a {target.ip}",
+                
+                # smbclient null session
+                f"{self.config['tools']['smbclient']} -L //{target.ip}/ -N",
+                
+                # crackmapexec null session
+                f"{self.config['tools']['crackmapexec']} smb {target.ip}",
+                f"{self.config['tools']['crackmapexec']} smb {target.ip} --shares -u '' -p ''",
+                f"{self.config['tools']['crackmapexec']} smb {target.ip} --users -u '' -p ''",
+                f"{self.config['tools']['crackmapexec']} smb {target.ip} --groups -u '' -p ''",
+            ]
             
         # Exécuter tous les scans SMB
         for i, command in enumerate(commands):
@@ -686,12 +807,29 @@ class WinReconScanner:
         if 389 not in target.open_ports and 636 not in target.open_ports:
             return
             
+        creds_info = ""
+        if self.config.get('username'):
+            creds_info = f"Using credentials: {self.config.get('username')}@{self.config.get('domain', 'WORKGROUP')}"
+            tools_info = "Tools: ldapsearch, windapsearch, BloodHound"
+        else:
+            creds_info = "Using anonymous queries only"
+            tools_info = "Tools: ldapsearch (anonymous)"
+            
+        if not self.ask_confirmation(
+            "LDAP/Active Directory Enumeration", 
+            f"Enumerate AD users, groups, and collect BloodHound data from {target.ip}\n"
+            f"{tools_info}\n"
+            f"Authentication: {creds_info}"
+        ):
+            self.logger.info(f"Skipping LDAP enumeration for {target.ip}")
+            return
+            
         self.update_status(target.ip, "LDAP_ENUM", "Enumerating AD users and groups")
         self.logger.info(f"Starting LDAP enumeration for {target.ip}")
         
         commands = []
         
-        # ldapsearch anonyme
+        # ldapsearch anonyme (toujours essayer)
         commands.extend([
             f"ldapsearch -x -h {target.ip} -s base namingcontexts",
             f"ldapsearch -x -h {target.ip} -s base '(objectClass=*)'",
@@ -706,8 +844,43 @@ class WinReconScanner:
             password = self.config.get('password')
             hash_val = self.config.get('hash')
             
-            # windapsearch - only if password provided (doesn't support hash)
+            # ldapsearch authentifié
             if password:
+                # Construire le Bind DN pour ldapsearch
+                # Format typique pour AD: CN=username,CN=Users,DC=domain,DC=com
+                # Mais on peut aussi utiliser le format username@domain.com qui est plus simple
+                bind_dn = f"{username}@{domain}"
+                
+                # Construire le base DN à partir du domaine
+                # Exemple: corp.local -> dc=corp,dc=local
+                # Exemple: sub.corp.local -> dc=sub,dc=corp,dc=local
+                base_dn = ','.join([f'dc={part}' for part in domain.split('.')])
+                
+                # ldapsearch avec authentification
+                auth_ldap_commands = [
+                    # Récupérer tous les utilisateurs
+                    f"ldapsearch -x -h {target.ip} -D '{bind_dn}' -w '{password}' "
+                    f"-b '{base_dn}' '(objectClass=user)' sAMAccountName memberOf userPrincipalName",
+                    
+                    # Récupérer les groupes
+                    f"ldapsearch -x -h {target.ip} -D '{bind_dn}' -w '{password}' "
+                    f"-b '{base_dn}' '(objectClass=group)' cn member description",
+                    
+                    # Récupérer les ordinateurs
+                    f"ldapsearch -x -h {target.ip} -D '{bind_dn}' -w '{password}' "
+                    f"-b '{base_dn}' '(objectClass=computer)' cn operatingSystem dNSHostName",
+                    
+                    # Récupérer les comptes de service (SPNs)
+                    f"ldapsearch -x -h {target.ip} -D '{bind_dn}' -w '{password}' "
+                    f"-b '{base_dn}' '(&(objectClass=user)(servicePrincipalName=*))' sAMAccountName servicePrincipalName",
+                    
+                    # Récupérer les utilisateurs avec des attributs intéressants
+                    f"ldapsearch -x -h {target.ip} -D '{bind_dn}' -w '{password}' "
+                    f"-b '{base_dn}' '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))' sAMAccountName",  # DONT_REQ_PREAUTH
+                ]
+                commands.extend(auth_ldap_commands)
+                
+                # windapsearch - only if password provided (doesn't support hash)
                 windap_commands = [
                     f"{self.config['tools']['windapsearch']} -d {domain} "
                     f"-u {username} -p {password} --dc-ip {target.ip} -U",
@@ -724,43 +897,116 @@ class WinReconScanner:
                 bloodhound_output_dir = target_dir / 'loot' / 'bloodhound'
                 bloodhound_output_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Changer le répertoire de travail pour BloodHound
+                # BloodHound-python avec syntaxe correcte
+                # Format: username@domain ou juste username si le domaine est spécifié avec -d
                 bloodhound_cmd = (f"cd {bloodhound_output_dir} && "
                                 f"{self.config['tools']['bloodhound']} "
-                                f"-u {username}@{domain} -p {password} "
-                                f"-d {domain} -dc {target.ip} -c all --zip")
+                                f"-u {username}@{domain} "
+                                f"-p '{password}' "
+                                f"-d {domain} "
+                                f"-ns {target.ip} "
+                                f"-dc {target.ip} "
+                                f"-c All "
+                                f"--dns-tcp "
+                                f"--disable-pooling "
+                                f"--zip")
                 
                 # Exécuter BloodHound séparément avec un message de statut
-                self.update_status(target.ip, "BLOODHOUND", "Collecting AD data for graph analysis")
+                self.update_status(target.ip, "BLOODHOUND", "Collecting AD data for graph analysis (All methods)")
                 self.logger.info(f"Running BloodHound collection against {target.ip}")
+                self.logger.debug(f"BloodHound command: {bloodhound_cmd}")
                 
-                bloodhound_result = await self.run_command(bloodhound_cmd, timeout=600)  # 10 min timeout
+                bloodhound_result = await self.run_command(bloodhound_cmd, timeout=900)  # 15 min timeout pour All
                 
                 if bloodhound_result and 'error' not in bloodhound_result:
                     self.logger.info(f"BloodHound collection completed for {target.ip}")
+                    # Vérifier si des fichiers ont été générés
+                    json_files = list(bloodhound_output_dir.glob('*.json'))
+                    zip_files = list(bloodhound_output_dir.glob('*.zip'))
+                    if json_files or zip_files:
+                        self.logger.info(f"BloodHound generated {len(json_files)} JSON files and {len(zip_files)} ZIP files")
+                    else:
+                        self.logger.warning("BloodHound completed but no output files found")
                 else:
                     self.logger.error(f"BloodHound collection failed: {bloodhound_result.get('error', 'Unknown error')}")
+                    # Fallback: essayer avec une collection plus limitée (DCOnly)
+                    self.logger.info("Attempting fallback BloodHound collection with DCOnly method...")
+                    
+                    bloodhound_fallback_cmd = (f"cd {bloodhound_output_dir} && "
+                                             f"{self.config['tools']['bloodhound']} "
+                                             f"-u {username}@{domain} "
+                                             f"-p '{password}' "
+                                             f"-d {domain} "
+                                             f"-ns {target.ip} "
+                                             f"-dc {target.ip} "
+                                             f"-c DCOnly "
+                                             f"--dns-tcp "
+                                             f"--zip")
+                    
+                    fallback_result = await self.run_command(bloodhound_fallback_cmd, timeout=300)
+                    if fallback_result and 'error' not in fallback_result:
+                        self.logger.info("BloodHound DCOnly collection completed successfully")
             elif hash_val:
                 # BloodHound avec hash NTLM
                 bloodhound_output_dir = target_dir / 'loot' / 'bloodhound'
                 bloodhound_output_dir.mkdir(parents=True, exist_ok=True)
                 
-                # BloodHound-python supporte l'authentification par hash
+                # BloodHound-python supporte l'authentification par hash au format LM:NTLM
+                # Si seulement NTLM fourni, ajouter des zéros pour LM
+                if ':' not in hash_val:
+                    formatted_hash = f"00000000000000000000000000000000:{hash_val}"
+                else:
+                    formatted_hash = hash_val
+                
                 bloodhound_cmd = (f"cd {bloodhound_output_dir} && "
                                 f"{self.config['tools']['bloodhound']} "
-                                f"-u {username}@{domain} --hashes {hash_val} "
-                                f"-d {domain} -dc {target.ip} -c all --zip")
+                                f"-u {username}@{domain} "
+                                f"--hashes {formatted_hash} "
+                                f"-d {domain} "
+                                f"-ns {target.ip} "
+                                f"-dc {target.ip} "
+                                f"-c All "
+                                f"--dns-tcp "
+                                f"--disable-pooling "
+                                f"--auth-method ntlm "
+                                f"--zip")
                 
                 # Exécuter BloodHound avec hash
-                self.update_status(target.ip, "BLOODHOUND", "Collecting AD data with NTLM hash")
+                self.update_status(target.ip, "BLOODHOUND", "Collecting AD data with NTLM hash (All methods)")
                 self.logger.info(f"Running BloodHound collection with NTLM hash against {target.ip}")
+                self.logger.debug(f"BloodHound hash command: bloodhound-python -u {username}@{domain} --hashes {formatted_hash[:20]}... [REDACTED]")
                 
-                bloodhound_result = await self.run_command(bloodhound_cmd, timeout=600)
+                bloodhound_result = await self.run_command(bloodhound_cmd, timeout=900)
                 
                 if bloodhound_result and 'error' not in bloodhound_result:
-                    self.logger.info(f"BloodHound collection completed for {target.ip}")
+                    self.logger.info(f"BloodHound collection with hash completed for {target.ip}")
+                    # Vérifier si des fichiers ont été générés
+                    json_files = list(bloodhound_output_dir.glob('*.json'))
+                    zip_files = list(bloodhound_output_dir.glob('*.zip'))
+                    if json_files or zip_files:
+                        self.logger.info(f"BloodHound generated {len(json_files)} JSON files and {len(zip_files)} ZIP files")
+                    else:
+                        self.logger.warning("BloodHound completed but no output files found")
                 else:
-                    self.logger.error(f"BloodHound collection failed: {bloodhound_result.get('error', 'Unknown error')}")
+                    self.logger.error(f"BloodHound collection with hash failed: {bloodhound_result.get('error', 'Unknown error')}")
+                    # Fallback: essayer avec DCOnly
+                    self.logger.info("Attempting fallback BloodHound collection with DCOnly method...")
+                    
+                    bloodhound_fallback_cmd = (f"cd {bloodhound_output_dir} && "
+                                             f"{self.config['tools']['bloodhound']} "
+                                             f"-u {username}@{domain} "
+                                             f"--hashes {formatted_hash} "
+                                             f"-d {domain} "
+                                             f"-ns {target.ip} "
+                                             f"-dc {target.ip} "
+                                             f"-c DCOnly "
+                                             f"--dns-tcp "
+                                             f"--auth-method ntlm "
+                                             f"--zip")
+                    
+                    fallback_result = await self.run_command(bloodhound_fallback_cmd, timeout=300)
+                    if fallback_result and 'error' not in fallback_result:
+                        self.logger.info("BloodHound DCOnly collection with hash completed successfully")
                     
                 self.logger.info("[*] Using hash authentication - some tools skipped")
         else:
@@ -774,6 +1020,16 @@ class WinReconScanner:
     async def kerberos_enumeration(self, target: Target, target_dir: Path):
         """Énumération Kerberos"""
         if 88 not in target.open_ports:
+            return
+            
+        if not self.ask_confirmation(
+            "Kerberos Attack Enumeration", 
+            f"Perform Kerberos attacks against {target.ip}\n"
+            f"Attacks: ASREPRoasting, Kerberoasting\n"
+            f"Tools: impacket-GetNPUsers, impacket-GetUserSPNs\n"
+            f"Domain: {self.config.get('domain', 'N/A')}"
+        ):
+            self.logger.info(f"Skipping Kerberos enumeration for {target.ip}")
             return
             
         self.update_status(target.ip, "KERBEROS_ENUM", "ASREPRoast and Kerberoasting")
@@ -817,6 +1073,16 @@ class WinReconScanner:
         found_web_ports = [port for port in web_ports if port in target.open_ports]
         
         if not found_web_ports:
+            return
+            
+        if not self.ask_confirmation(
+            "Web Service Enumeration", 
+            f"Enumerate web services on {target.ip}\n"
+            f"Ports found: {found_web_ports}\n"
+            f"Tools: Nikto (vulnerability scanning), Gobuster (directory discovery)\n"
+            f"Note: This may generate significant web traffic"
+        ):
+            self.logger.info(f"Skipping web enumeration for {target.ip}")
             return
             
         self.update_status(target.ip, "WEB_ENUM", f"Scanning web services on ports {found_web_ports}")
@@ -1147,6 +1413,8 @@ Examples:
                        help='Disable interactive credential prompting')
     parser.add_argument('--no-auto-detect', action='store_true',
                        help='Disable automatic tool detection')
+    parser.add_argument('--interactive', action='store_true',
+                       help='Enable interactive mode - confirm each scan phase')
     
     # Credentials
     cred_group = parser.add_argument_group('credentials')
@@ -1237,8 +1505,28 @@ Examples:
     print(f"Output directory: {config['output_dir']}")
     print("-" * 50)
     
+    # Ask about interactive mode if not specified
+    interactive_mode = args.interactive
+    if not args.no_prompt and not interactive_mode:
+        print("\n" + "="*60)
+        print("SCAN MODE SELECTION")
+        print("="*60)
+        print("Interactive mode allows you to confirm each scan phase before execution.")
+        print("This gives you control over which tools run and prevents unwanted activity.")
+        print("="*60)
+        
+        response = input("\nDo you want to enable interactive mode? (y/n) [default: n]: ").strip().lower()
+        interactive_mode = response in ['y', 'yes']
+        
+        if interactive_mode:
+            print("✅ Interactive mode enabled - you will be asked to confirm each phase")
+        else:
+            print("🚀 Running in automatic mode - all applicable scans will execute")
+        print("-" * 50)
+    
     # Lancer le scanner
     scanner = WinReconScanner(config, no_prompt=args.no_prompt, no_auto_detect=args.no_auto_detect)
+    scanner.interactive_mode = interactive_mode
     
     try:
         asyncio.run(scanner.run(all_targets))
