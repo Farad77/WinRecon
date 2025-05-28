@@ -877,6 +877,267 @@ class WinReconScanner:
             
         return result
 
+    def parse_bloodhound_json(self, json_file: Path) -> Dict:
+        """Parse BloodHound JSON output files for key findings"""
+        import json
+        
+        try:
+            with open(json_file, 'r') as f:
+                data = json.load(f)
+                
+            # Determine file type based on meta information
+            file_type = data.get('meta', {}).get('type', 'unknown')
+            
+            if file_type == 'users':
+                return self._parse_bloodhound_users(data)
+            elif file_type == 'groups':
+                return self._parse_bloodhound_groups(data)
+            elif file_type == 'computers':
+                return self._parse_bloodhound_computers(data)
+            elif file_type == 'domains':
+                return self._parse_bloodhound_domains(data)
+            else:
+                self.logger.warning(f"Unknown BloodHound file type: {file_type}")
+                return {'type': file_type, 'data': data}
+                
+        except Exception as e:
+            self.logger.error(f"Error parsing BloodHound JSON {json_file}: {e}")
+            return {}
+    
+    def _parse_bloodhound_users(self, data: Dict) -> Dict:
+        """Parse BloodHound users JSON for key findings"""
+        findings = {
+            'type': 'users',
+            'total_count': 0,
+            'enabled_count': 0,
+            'admin_users': [],
+            'kerberoastable_users': [],
+            'asreproastable_users': [],
+            'sensitive_users': [],
+            'unconstrained_delegation': [],
+            'high_value_targets': [],
+            'interesting_acls': [],
+            'all_users': [],
+            'enabled_users': []
+        }
+        
+        for user in data.get('data', []):
+            props = user.get('Properties', {})
+            aces = user.get('Aces', [])
+            
+            username = props.get('samaccountname', 'unknown')
+            display_name = props.get('displayname', props.get('name', username))
+            enabled = props.get('enabled', False)
+            findings['all_users'].append(username)
+            if enabled:
+                findings['enabled_users'].append(username)
+            
+            # Admin users
+            if props.get('admincount', False):
+                findings['admin_users'].append({
+                    'username': username,
+                    'display_name': display_name,
+                    'enabled': enabled,
+                    'pwdlastset': props.get('pwdlastset', 0)
+                })
+            
+            # Kerberoastable users (have SPN)
+            if props.get('hasspn', False) and props.get('serviceprincipalnames', []):
+                findings['kerberoastable_users'].append({
+                    'username': username,
+                    'spns': props.get('serviceprincipalnames', []),
+                    'enabled': enabled
+                })
+            
+            # ASREPRoastable users
+            if props.get('dontreqpreauth', False):
+                findings['asreproastable_users'].append({
+                    'username': username,
+                    'enabled': enabled
+                })
+            
+            # Sensitive users
+            if props.get('sensitive', False):
+                findings['sensitive_users'].append({
+                    'username': username,
+                    'enabled': enabled
+                })
+            
+            # Unconstrained delegation
+            if props.get('unconstraineddelegation', False):
+                findings['unconstrained_delegation'].append({
+                    'username': username,
+                    'enabled': enabled
+                })
+            
+            # Check for interesting ACLs
+            for ace in aces:
+                if ace.get('RightName') in ['GenericAll', 'GenericWrite', 'WriteOwner', 'WriteDacl', 'AllExtendedRights']:
+                    # Skip common administrative groups
+                    principal_sid = ace.get('PrincipalSID', '')
+                    if not any(sid in principal_sid for sid in ['-512', '-519', '-544']):  # Domain Admins, Enterprise Admins, Administrators
+                        findings['interesting_acls'].append({
+                            'target_user': username,
+                            'right': ace.get('RightName'),
+                            'principal_sid': principal_sid,
+                            'principal_type': ace.get('PrincipalType')
+                        })
+        findings['total_count'] = len(findings['all_users'])
+        findings['enabled_count'] = len(findings['enabled_users'])
+        return findings
+    
+    def _parse_bloodhound_groups(self, data: Dict) -> Dict:
+        """Parse BloodHound groups JSON for key findings"""
+        findings = {
+            'type': 'groups',
+            'total_count': data.get('meta', {}).get('count', 0),
+            'high_value_groups': [],
+            'admin_groups': [],
+            'custom_groups': [],
+            'group_memberships': {}
+        }
+        
+        for group in data.get('data', []):
+            props = group.get('Properties', {})
+            members = group.get('Members', [])
+            
+            group_name = props.get('samaccountname', props.get('name', 'unknown'))
+            
+            # High value groups
+            if props.get('highvalue', False) or group_name.lower() in ['domain admins', 'enterprise admins', 'administrators', 'schema admins']:
+                findings['high_value_groups'].append({
+                    'name': group_name,
+                    'member_count': len(members),
+                    'description': props.get('description', '')
+                })
+            
+            # Admin groups
+            if props.get('admincount', False):
+                findings['admin_groups'].append({
+                    'name': group_name,
+                    'member_count': len(members)
+                })
+            
+            # Store group memberships
+            if members:
+                findings['group_memberships'][group_name] = [
+                    m.get('ObjectIdentifier') for m in members
+                ]
+        
+        return findings
+    
+    def _parse_bloodhound_computers(self, data: Dict) -> Dict:
+        """Parse BloodHound computers JSON for key findings"""
+        findings = {
+            'type': 'computers',
+            'total_count': data.get('meta', {}).get('count', 0),
+            'domain_controllers': [],
+            'unconstrained_delegation': [],
+            'outdated_os': [],
+            'high_value_computers': []
+        }
+        
+        for computer in data.get('data', []):
+            props = computer.get('Properties', {})
+            
+            computer_name = props.get('samaccountname', props.get('name', 'unknown'))
+            os_name = props.get('operatingsystem', 'unknown')
+            
+            # Domain controllers
+            if props.get('isdомаincontroller', False):
+                findings['domain_controllers'].append({
+                    'name': computer_name,
+                    'os': os_name,
+                    'enabled': props.get('enabled', False)
+                })
+            
+            # Unconstrained delegation
+            if props.get('unconstraineddelegation', False) and not props.get('isdомаincontroller', False):
+                findings['unconstrained_delegation'].append({
+                    'name': computer_name,
+                    'os': os_name,
+                    'enabled': props.get('enabled', False)
+                })
+            
+            # Outdated OS
+            if any(old_os in os_name.lower() for old_os in ['2003', '2008', 'windows 7', 'windows xp']):
+                findings['outdated_os'].append({
+                    'name': computer_name,
+                    'os': os_name,
+                    'enabled': props.get('enabled', False)
+                })
+        
+        return findings
+    
+    def _parse_bloodhound_domains(self, data: Dict) -> Dict:
+        """Parse BloodHound domains JSON for domain information"""
+        findings = {
+            'type': 'domains',
+            'domains': []
+        }
+        
+        for domain in data.get('data', []):
+            props = domain.get('Properties', {})
+            trusts = domain.get('Trusts', [])
+            
+            findings['domains'].append({
+                'name': props.get('name', 'unknown'),
+                'domain_sid': props.get('objectid', ''),
+                'functional_level': props.get('functionallevel', 'unknown'),
+                'trusts': [{
+                    'target': t.get('TargetDomainName'),
+                    'direction': t.get('TrustDirection'),
+                    'type': t.get('TrustType'),
+                    'transitive': t.get('IsTransitive', False)
+                } for t in trusts]
+            })
+        
+        return findings
+    
+    def analyze_bloodhound_data(self, bloodhound_dir: Path) -> Dict:
+        """Analyze all BloodHound JSON files in a directory"""
+        findings = {
+            'users': {},
+            'groups': {},
+            'computers': {},
+            'domains': {},
+            'attack_paths': [],
+            'summary': {}
+        }
+        
+        if not bloodhound_dir.exists():
+            return findings
+            
+        # Parse all JSON files
+        for json_file in bloodhound_dir.glob('*.json'):
+            self.logger.info(f"Parsing BloodHound file: {json_file.name}")
+            parsed = self.parse_bloodhound_json(json_file)
+            
+            if parsed.get('type') == 'users':
+                findings['users'] = parsed
+            elif parsed.get('type') == 'groups':
+                findings['groups'] = parsed
+            elif parsed.get('type') == 'computers':
+                findings['computers'] = parsed
+            elif parsed.get('type') == 'domains':
+                findings['domains'] = parsed
+        
+        # Generate summary
+        findings['summary'] = {
+            'total_users': findings['users'].get('total_count', 0),
+            'enabled_users': findings['users'].get('enabled_count', 0),
+            'admin_users': len(findings['users'].get('admin_users', [])),
+            'kerberoastable_users': len(findings['users'].get('kerberoastable_users', [])),
+            'asreproastable_users': len(findings['users'].get('asreproastable_users', [])),
+            'total_computers': findings['computers'].get('total_count', 0),
+            'domain_controllers': len(findings['computers'].get('domain_controllers', [])),
+            'unconstrained_delegation_computers': len(findings['computers'].get('unconstrained_delegation', [])),
+            'high_value_groups': len(findings['groups'].get('high_value_groups', [])),
+            'interesting_acls': len(findings['users'].get('interesting_acls', []))
+        }
+        
+        return findings
+
     async def smb_enumeration(self, target: Target, target_dir: Path):
         """Énumération SMB complète"""
         if 445 not in target.open_ports and 139 not in target.open_ports:
@@ -1245,6 +1506,33 @@ class WinReconScanner:
                 zip_files = list(bloodhound_output_dir.glob('*.zip'))
                 if json_files or zip_files:
                     self.logger.info(f"BloodHound generated {len(json_files)} JSON files and {len(zip_files)} ZIP files")
+                    
+                    # Parse BloodHound data
+                    self.logger.info("Analyzing BloodHound data...")
+                    bloodhound_findings = self.analyze_bloodhound_data(bloodhound_output_dir)
+                    
+                    # Save parsed findings
+                    findings_file = bloodhound_output_dir / 'parsed_findings.json'
+                    try:
+                        import json
+                        with open(findings_file, 'w') as f:
+                            json.dump(bloodhound_findings, f, indent=2)
+                        self.logger.info(f"BloodHound findings saved to {findings_file}")
+                        
+                        # Log summary of findings
+                        summary = bloodhound_findings.get('summary', {})
+                        if summary:
+                            self.logger.info(f"BloodHound Summary:")
+                            self.logger.info(f"  - Total users: {summary.get('total_users', 0)}")
+                            self.logger.info(f"  - Admin users: {summary.get('admin_users', 0)}")
+                            self.logger.info(f"  - Kerberoastable: {summary.get('kerberoastable_users', 0)}")
+                            self.logger.info(f"  - ASREPRoastable: {summary.get('asreproastable_users', 0)}")
+                            self.logger.info(f"  - Domain Controllers: {summary.get('domain_controllers', 0)}")
+                            self.logger.info(f"  - Interesting ACLs: {summary.get('interesting_acls', 0)}")
+                            
+                    except Exception as e:
+                        self.logger.error(f"Error saving BloodHound findings: {e}")
+                        
                 else:
                     self.logger.warning("BloodHound completed but no output files found")
                     self.logger.warning("Check if the domain/username/password are correct")

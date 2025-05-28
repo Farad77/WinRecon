@@ -387,6 +387,18 @@ class AdvancedReportGenerator:
         if not bloodhound_dir.exists():
             return
             
+        # First check for parsed findings file
+        parsed_findings_file = bloodhound_dir / 'parsed_findings.json'
+        if parsed_findings_file.exists():
+            try:
+                with open(parsed_findings_file, 'r') as f:
+                    findings = json.load(f)
+                self.logger.info("Using pre-parsed BloodHound findings")
+                self._process_bloodhound_findings(findings)
+                return
+            except Exception as e:
+                self.logger.error(f"Error loading parsed BloodHound findings: {e}")
+        
         # Check for BloodHound ZIP file first
         import zipfile
         import tempfile
@@ -407,6 +419,87 @@ class AdvancedReportGenerator:
         else:
             # Look for JSON files directly
             return self._analyze_bloodhound_json_files(bloodhound_dir)
+    
+    def _process_bloodhound_findings(self, findings: Dict):
+        """Process pre-parsed BloodHound findings and generate vulnerabilities"""
+        if not findings:
+            return
+            
+        # Process user findings
+        user_findings = findings.get('users', {})
+        
+        # Admin users
+        admin_users = user_findings.get('admin_users', [])
+        if admin_users:
+            self.vulnerabilities.append({
+                'title': f'Admin Users Found ({len(admin_users)})',
+                'severity': 'medium',
+                'description': 'Users with adminCount=true detected',
+                'details': ', '.join([u['username'] for u in admin_users[:5]]) + ('...' if len(admin_users) > 5 else '')
+            })
+        
+        # Kerberoastable users
+        kerb_users = user_findings.get('kerberoastable_users', [])
+        if kerb_users:
+            self.vulnerabilities.append({
+                'title': f'Kerberoastable Users ({len(kerb_users)})',
+                'severity': 'high',
+                'description': 'Users with SPNs that can be Kerberoasted',
+                'details': ', '.join([u['username'] for u in kerb_users[:5]]) + ('...' if len(kerb_users) > 5 else '')
+            })
+        
+        # ASREPRoastable users
+        asrep_users = user_findings.get('asreproastable_users', [])
+        if asrep_users:
+            self.vulnerabilities.append({
+                'title': f'ASREPRoastable Users ({len(asrep_users)})',
+                'severity': 'high',
+                'description': 'Users without Kerberos pre-authentication',
+                'details': ', '.join([u['username'] for u in asrep_users[:5]]) + ('...' if len(asrep_users) > 5 else '')
+            })
+        
+        # Interesting ACLs
+        acls = user_findings.get('interesting_acls', [])
+        if acls:
+            self.vulnerabilities.append({
+                'title': f'Interesting ACLs Found ({len(acls)})',
+                'severity': 'high',
+                'description': 'Non-standard ACLs that may allow privilege escalation',
+                'details': f"Found {len(acls)} potentially exploitable ACL entries"
+            })
+        
+        # Process computer findings
+        computer_findings = findings.get('computers', {})
+        
+        # Unconstrained delegation
+        unconstrained = computer_findings.get('unconstrained_delegation', [])
+        if unconstrained:
+            self.vulnerabilities.append({
+                'title': f'Unconstrained Delegation ({len(unconstrained)})',
+                'severity': 'critical',
+                'description': 'Computers with unconstrained delegation (excluding DCs)',
+                'details': ', '.join([c['name'] for c in unconstrained[:3]]) + ('...' if len(unconstrained) > 3 else '')
+            })
+        
+        # Outdated OS
+        outdated = computer_findings.get('outdated_os', [])
+        if outdated:
+            self.vulnerabilities.append({
+                'title': f'Outdated Operating Systems ({len(outdated)})',
+                'severity': 'medium',
+                'description': 'Computers running outdated/unsupported OS versions',
+                'details': ', '.join([f"{c['name']} ({c['os']})" for c in outdated[:3]]) + ('...' if len(outdated) > 3 else '')
+            })
+        
+        # Store findings for report generation
+        self.findings['bloodhound'] = findings
+        
+        # Log summary
+        summary = findings.get('summary', {})
+        if summary:
+            self.logger.info(f"BloodHound findings processed: {summary.get('total_users', 0)} users, "
+                           f"{summary.get('admin_users', 0)} admins, "
+                           f"{summary.get('kerberoastable_users', 0)} kerberoastable")
     
     def _analyze_bloodhound_json_files(self, json_dir: Path):
         """Analyze BloodHound JSON files from a directory"""
