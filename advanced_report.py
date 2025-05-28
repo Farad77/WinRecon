@@ -129,9 +129,69 @@ class AdvancedReportGenerator:
             'users': [],
             'groups': [],
             'policies': {},
-            'null_session': False
+            'null_session': False,
+            'domain_info': {},
+            'session_status': False
         }
         
+        # First, try to load parsed results if available
+        parsed_file = smb_dir / 'parsed_results.json'
+        if parsed_file.exists():
+            try:
+                with open(parsed_file, 'r') as f:
+                    parsed_data = json.load(f)
+                    
+                # Use parsed data
+                findings['shares'] = parsed_data.get('all_shares', [])
+                findings['users'] = parsed_data.get('all_users', [])
+                findings['domain_info'] = parsed_data.get('domain_info', {})
+                findings['session_status'] = parsed_data.get('session_status', False)
+                
+                # Check for interesting shares
+                interesting_shares = []
+                for share in findings['shares']:
+                    share_name = share.get('name', '').upper()
+                    if share_name not in ['IPC$', 'ADMIN$', 'C$'] and share.get('access') in ['OK', 'READ', 'WRITE', 'READ,WRITE']:
+                        interesting_shares.append(share)
+                        if share_name in ['SYSVOL', 'NETLOGON']:
+                            self.vulnerabilities.append({
+                                'title': f'Domain Share Access: {share_name}',
+                                'severity': 'medium',
+                                'description': f'Access to {share_name} share detected',
+                                'details': f"Share: {share['name']}, Access: {share.get('access', 'unknown')}"
+                            })
+                
+                # Check for admin users
+                admin_users = []
+                for user in findings['users']:
+                    username = user.get('account', user.get('username', ''))
+                    if 'admin' in username.lower() or user.get('rid') == '1f4':  # RID 500 = Administrator
+                        admin_users.append(user)
+                        
+                # Check for domain type
+                if findings['domain_info'].get('type') == 'domain':
+                    self.findings['domain_joined'] = True
+                    self.logger.info(f"Target is domain-joined: {findings['domain_info'].get('name')}")
+                    
+                # Log summary
+                self.logger.info(f"SMB Analysis: Found {len(findings['users'])} users, {len(findings['shares'])} shares")
+                if interesting_shares:
+                    self.logger.info(f"Interesting shares: {[s['name'] for s in interesting_shares[:3]]}")
+                if admin_users:
+                    self.logger.info(f"Admin users found: {[u.get('account', u.get('username')) for u in admin_users[:3]]}")
+                    
+            except Exception as e:
+                self.logger.error(f"Error loading parsed SMB results: {e}")
+                # Fall back to text parsing
+                self._analyze_smb_text_files(smb_dir, findings)
+        else:
+            # Fall back to original text file parsing
+            self._analyze_smb_text_files(smb_dir, findings)
+        
+        self.findings['smb'] = findings
+        
+    def _analyze_smb_text_files(self, smb_dir: Path, findings: Dict):
+        """Fallback method to parse SMB text files"""
         for smb_file in smb_dir.glob('*.txt'):
             content = self.read_file_safe(smb_file)
             if not content:

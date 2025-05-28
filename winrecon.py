@@ -727,6 +727,156 @@ class WinReconScanner:
         
         self.logger.info(f"Found {len(target.open_ports)} open ports on {target.ip}: {target.open_ports}")
 
+    def parse_enum4linux_output(self, output: str) -> Dict:
+        """Parse enum4linux output for users, shares, and domain information"""
+        import re
+        
+        result = {
+            'domain_info': {},
+            'users': [],
+            'shares': [],
+            'groups': [],
+            'session_check': False,
+            'os_info': {}
+        }
+        
+        # Parse domain information
+        domain_match = re.search(r'Domain Name:\s+(.+)', output)
+        if domain_match:
+            result['domain_info']['name'] = domain_match.group(1).strip()
+            
+        sid_match = re.search(r'Domain Sid:\s+(S-[0-9-]+)', output)
+        if sid_match:
+            result['domain_info']['sid'] = sid_match.group(1).strip()
+            
+        # Check if part of domain or workgroup
+        if 'Host is part of a domain' in output:
+            result['domain_info']['type'] = 'domain'
+        elif 'Host is part of a workgroup' in output:
+            result['domain_info']['type'] = 'workgroup'
+            
+        # Parse session check
+        if 'allows sessions using username' in output:
+            result['session_check'] = True
+            
+        # Parse OS information
+        os_match = re.search(r'platform_id\s+:\s+(.+)', output)
+        if os_match:
+            result['os_info']['platform_id'] = os_match.group(1).strip()
+            
+        version_match = re.search(r'os version\s+:\s+(.+)', output)
+        if version_match:
+            result['os_info']['version'] = version_match.group(1).strip()
+            
+        # Parse users (index format)
+        user_pattern = r'index:\s+0x[a-f0-9]+\s+RID:\s+0x([a-f0-9]+)\s+acb:\s+0x[a-f0-9]+\s+Account:\s+(\S+)\s+Name:\s+([^:]+?)\s+Desc:\s+(.+?)(?=\nindex|\n\n|$)'
+        users = re.findall(user_pattern, output, re.MULTILINE | re.DOTALL)
+        
+        for user in users:
+            rid, account, name, desc = user
+            result['users'].append({
+                'rid': rid,
+                'account': account.strip(),
+                'name': name.strip() if name.strip() != '(null)' else None,
+                'description': desc.strip() if desc.strip() != '(null)' else None
+            })
+            
+        # Parse shares - look for the table with Sharename header
+        share_pattern = r'Sharename.*?Type.*?Comment.*?\n.*?-+.*?\n(.*?)(?=SMB1|$|\n\[)'
+        share_match = re.search(share_pattern, output, re.DOTALL)
+        if share_match:
+            shares_text = share_match.group(1)
+            for line in shares_text.split('\n'):
+                line = line.strip()
+                if line and not line.startswith('-'):
+                    # Split on whitespace but handle comments with spaces
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1] in ['Disk', 'IPC', 'Printer']:
+                        share_name = parts[0]
+                        share_type = parts[1]
+                        comment = ' '.join(parts[2:]) if len(parts) > 2 else ''
+                        result['shares'].append({
+                            'name': share_name,
+                            'type': share_type,
+                            'comment': comment
+                        })
+                        
+        # Parse share access information
+        mapping_pattern = r'//[^/]+/(\w+)\s+Mapping:\s+(\w+)'
+        mappings = re.findall(mapping_pattern, output)
+        
+        # Update shares with access info
+        for share_name, access in mappings:
+            for share in result['shares']:
+                if share['name'] == share_name:
+                    share['access'] = access
+                    break
+                    
+        return result
+    
+    def parse_smbclient_shares(self, output: str) -> List[Dict]:
+        """Parse smbclient share listing output"""
+        import re
+        
+        shares = []
+        # Parse smbclient -L output
+        share_pattern = r'^\s*(\S+)\s+(Disk|IPC|Printer)\s*(.*)$'
+        
+        for line in output.split('\n'):
+            match = re.match(share_pattern, line)
+            if match:
+                name, share_type, comment = match.groups()
+                shares.append({
+                    'name': name,
+                    'type': share_type,
+                    'comment': comment.strip()
+                })
+                
+        return shares
+    
+    def parse_crackmapexec_output(self, output: str) -> Dict:
+        """Parse crackmapexec output for users, shares, and other info"""
+        import re
+        
+        result = {
+            'users': [],
+            'shares': [],
+            'groups': [],
+            'domain_info': {},
+            'login_status': None
+        }
+        
+        # Parse SMB information line
+        smb_info = re.search(r'SMB\s+([0-9.]+)\s+445\s+(\S+)\s+\[(\*)\]\s+(.*)', output)
+        if smb_info:
+            result['domain_info']['hostname'] = smb_info.group(2)
+            result['domain_info']['info'] = smb_info.group(4)
+            
+        # Parse login status
+        if '[+]' in output and 'STATUS_SUCCESS' in output:
+            result['login_status'] = 'success'
+        elif '[-]' in output and ('STATUS_LOGON_FAILURE' in output or 'STATUS_ACCESS_DENIED' in output):
+            result['login_status'] = 'failed'
+            
+        # Parse users (if --users was used)
+        user_lines = re.findall(r'(\S+)\s+(\S+)\s+(\S+)\s+.*', output)
+        for user_line in user_lines:
+            if len(user_line) >= 2 and not user_line[0].startswith('['):
+                result['users'].append({
+                    'username': user_line[0],
+                    'rid': user_line[1] if len(user_line) > 1 else None
+                })
+                
+        # Parse shares (if --shares was used)  
+        share_lines = re.findall(r'(\S+)\s+(READ|WRITE|READ,WRITE|\[NO ACCESS\])', output)
+        for share_name, access in share_lines:
+            result['shares'].append({
+                'name': share_name,
+                'access': access
+            })
+            
+        return result
+
     async def smb_enumeration(self, target: Target, target_dir: Path):
         """Énumération SMB complète"""
         if 445 not in target.open_ports and 139 not in target.open_ports:
@@ -856,10 +1006,85 @@ class WinReconScanner:
         self.update_status(target.ip, "SMB_ENUM", "Enumerating SMB shares and users")
         self.logger.info(f"Starting SMB enumeration for {target.ip}")
             
-        # Exécuter tous les scans SMB
+        # Exécuter tous les scans SMB et parser les résultats
+        smb_results = {
+            'enum4linux': {},
+            'smbclient': {},
+            'crackmapexec': {},
+            'all_users': [],
+            'all_shares': [],
+            'domain_info': {},
+            'session_status': False
+        }
+        
         for i, command in enumerate(commands):
             output_file = target_dir / 'scans' / 'smb' / f'smb_scan_{i+1}.txt'
-            await self.run_command(command, output_file)
+            result = await self.run_command(command, output_file)
+            
+            if result.get('stdout'):
+                # Parse different command outputs
+                if 'enum4linux' in command:
+                    self.logger.info("Parsing enum4linux output...")
+                    parsed = self.parse_enum4linux_output(result['stdout'])
+                    smb_results['enum4linux'] = parsed
+                    
+                    # Merge users and shares
+                    smb_results['all_users'].extend(parsed['users'])
+                    smb_results['all_shares'].extend(parsed['shares'])
+                    smb_results['domain_info'].update(parsed['domain_info'])
+                    if parsed['session_check']:
+                        smb_results['session_status'] = True
+                        
+                elif 'smbclient' in command and '-L' in command:
+                    self.logger.info("Parsing smbclient share output...")
+                    shares = self.parse_smbclient_shares(result['stdout'])
+                    smb_results['smbclient']['shares'] = shares
+                    
+                    # Add to all_shares if not already present
+                    for share in shares:
+                        if not any(s['name'] == share['name'] for s in smb_results['all_shares']):
+                            smb_results['all_shares'].append(share)
+                            
+                elif 'crackmapexec' in command or 'cme' in command:
+                    self.logger.info("Parsing crackmapexec output...")
+                    parsed = self.parse_crackmapexec_output(result['stdout'])
+                    
+                    # Store parsed results
+                    if '--users' in command:
+                        smb_results['crackmapexec']['users'] = parsed['users']
+                        smb_results['all_users'].extend(parsed['users'])
+                    elif '--shares' in command:
+                        smb_results['crackmapexec']['shares'] = parsed['shares']
+                        # Merge with existing shares
+                        for share in parsed['shares']:
+                            existing = next((s for s in smb_results['all_shares'] if s['name'] == share['name']), None)
+                            if existing:
+                                existing.update(share)
+                            else:
+                                smb_results['all_shares'].append(share)
+                    
+                    smb_results['domain_info'].update(parsed['domain_info'])
+        
+        # Save parsed results to JSON for reports
+        results_file = target_dir / 'scans' / 'smb' / 'parsed_results.json'
+        try:
+            import json
+            with open(results_file, 'w') as f:
+                json.dump(smb_results, f, indent=2)
+            self.logger.info(f"SMB results parsed and saved to {results_file}")
+            
+            # Log summary of findings
+            if smb_results['all_users']:
+                self.logger.info(f"Found {len(smb_results['all_users'])} users: {[u.get('account', u.get('username', 'unknown')) for u in smb_results['all_users'][:5]]}")
+            if smb_results['all_shares']:
+                self.logger.info(f"Found {len(smb_results['all_shares'])} shares: {[s['name'] for s in smb_results['all_shares']]}")
+            if smb_results['domain_info'].get('name'):
+                self.logger.info(f"Domain: {smb_results['domain_info']['name']} (Type: {smb_results['domain_info'].get('type', 'unknown')})")
+                
+        except Exception as e:
+            self.logger.error(f"Error saving parsed SMB results: {e}")
+            
+        return smb_results
 
     async def ldap_enumeration(self, target: Target, target_dir: Path):
         """Énumération LDAP/Active Directory"""
